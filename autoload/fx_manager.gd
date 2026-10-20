@@ -18,6 +18,9 @@ const DMG_IMMUNE := 4     # «ИММУН» — замедление не взя�
 
 const SHAKE_TIME := 0.4
 const NUMBER_LIFETIME := 0.7
+const SPLASH_TEXTURE := preload("res://assets/img/splash boom.png")
+const FROST_TEXTURE := preload("res://assets/img/frost boom.png")
+const TESLA_TEXTURE := preload("res://assets/img/tesla boom.png")
 
 var _world: Node2D            # эффекты в мировых координатах (лучи, взрывы)
 var _overlay: CanvasLayer     # слой поверх всего: цифры урона, красная пелена
@@ -91,6 +94,7 @@ func unit_died(world_pos: Vector2, color: Color, flying: bool) -> void:
 @rpc("authority", "call_local", "reliable")
 func splash(world_pos: Vector2, radius: float) -> void:
 	AudioManager.play_sfx("boom")
+	_texture_burst(world_pos, SPLASH_TEXTURE, radius * 2.0, Color.WHITE, 0.48)
 	var burst := _make_burst(Color(1.0, 0.6, 0.25), radius, false, 0)
 	burst.position = world_pos
 	_world.add_child(burst)
@@ -101,6 +105,7 @@ func splash(world_pos: Vector2, radius: float) -> void:
 @rpc("authority", "call_local", "unreliable")
 func frost_pulse(world_pos: Vector2, radius: float) -> void:
 	AudioManager.play_sfx("frost")
+	_texture_burst(world_pos, FROST_TEXTURE, radius * 2.0, Color(0.82, 0.96, 1.0), 0.52)
 	var burst := _make_burst(Color(0.55, 0.85, 1.0), radius, true, 0)
 	burst.position = world_pos
 	_world.add_child(burst)
@@ -128,34 +133,34 @@ func beam(from: Vector2, to: Vector2, color: Color) -> void:
 	tween.chain().tween_callback(line.queue_free)
 
 
-## Цепная молния Теслы: ломаная с «дрожащими» звеньями между точками.
+## Цепная молния Теслы: использует отдельную текстуру разряда на каждом звене.
 @rpc("authority", "call_local", "unreliable")
 func chain(points: PackedVector2Array, color: Color) -> void:
 	AudioManager.play_sfx("beam", -4.0, 1.3)
 	if points.size() < 2:
 		return
-	var jagged := PackedVector2Array()
+	var texture_size := Vector2(TESLA_TEXTURE.get_size())
 	for i in range(points.size() - 1):
-		jagged.append(points[i])
-		# промежуточное «дрожащее» звено — молния выглядит живой
-		jagged.append((points[i] + points[i + 1]) * 0.5
-				+ Vector2(randf_range(-14.0, 14.0), randf_range(-14.0, 14.0)))
-	jagged.append(points[points.size() - 1])
-	var line := Line2D.new()
-	line.points = jagged
-	line.width = 3.0
-	line.default_color = Color(color).lightened(0.5)
-	line.z_index = 61
-	_world.add_child(line)
+		var start := points[i]
+		var finish := points[i + 1]
+		var segment := finish - start
+		var bolt := Sprite2D.new()
+		bolt.texture = TESLA_TEXTURE
+		bolt.position = (start + finish) * 0.5
+		bolt.rotation = segment.angle()
+		bolt.scale = Vector2(segment.length() / texture_size.x, 13.0 / texture_size.y)
+		bolt.modulate = Color(color).lightened(0.35)
+		bolt.z_index = 61
+		_world.add_child(bolt)
+		var tween := create_tween()
+		tween.set_parallel(true)
+		tween.tween_property(bolt, "scale:y", 0.001, 0.16)
+		tween.tween_property(bolt, "modulate:a", 0.0, 0.16)
+		tween.chain().tween_callback(bolt.queue_free)
 	var hit := _make_burst(color, 10.0, false, 3)
 	hit.position = points[points.size() - 1]
 	_world.add_child(hit)
 	_animate_burst(hit, 1.3, 0.2, Vector2.ZERO)
-	var tween := create_tween()
-	tween.set_parallel(true)
-	tween.tween_property(line, "width", 0.5, 0.15)
-	tween.tween_property(line, "modulate:a", 0.0, 0.15)
-	tween.chain().tween_callback(line.queue_free)
 
 
 ## Урон базе: тряска камеры + красная пелена по краям экрана.
@@ -186,6 +191,27 @@ class FxBurst:
 			var ang := TAU * float(i) / float(sparks) + randf() * 0.35
 			var dir := Vector2.from_angle(ang)
 			draw_line(dir * radius * 0.55, dir * radius * 1.15, Color(color, 0.85), 2.0)
+
+
+## Короткий арт-слой на попадании: используем подготовленный PNG-взрыв,
+## подгоняем по диаметру зоны и плавно рассеиваем поверх геометрического кольца.
+func _texture_burst(world_pos: Vector2, texture: Texture2D, diameter: float,
+		tint: Color, lifetime: float) -> void:
+	var sprite := Sprite2D.new()
+	sprite.texture = texture
+	sprite.position = world_pos
+	sprite.z_index = 63
+	sprite.modulate = tint
+	var max_side := maxf(float(texture.get_width()), float(texture.get_height()))
+	var fit := diameter / maxf(max_side, 1.0)
+	sprite.scale = Vector2.ONE * fit * 0.42
+	_world.add_child(sprite)
+	var tween := create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(sprite, "scale", Vector2.ONE * fit, lifetime) \
+			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.tween_property(sprite, "modulate:a", 0.0, lifetime)
+	tween.chain().tween_callback(sprite.queue_free)
 
 
 func _make_burst(color: Color, radius: float, ring_only: bool, sparks: int) -> FxBurst:

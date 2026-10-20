@@ -49,16 +49,225 @@ extends Control
 ## Индексы ItemList -> id Steam-лобби (custom-таб).
 var _lobby_ids: Array[int] = []
 var _tab_tween: Tween
+const SETTINGS_DIALOG := preload("res://scripts/settings_dialog.gd")
 
 
 func _ready() -> void:
+	theme = UISkin.theme()
+	_build_menu_backdrop()
+	_add_ambient_particles()
+	_build_brand_header()
+	_build_utility_buttons()
 	_connect_signals()
+	_style_primary_action()
+	for item in find_children("*", "Button", true, false):
+		_wire_button_feedback(item as Button)
 	_setup_profile_bar()
 	_setup_transport_selector()
 	_setup_role_pref()
 	_build_loadout_cards()
 	_show_tab(0)
 	AudioManager.play_music("bgm")
+	play_btn.grab_focus()
+
+
+func _build_menu_backdrop() -> void:
+	var backdrop := TextureRect.new()
+	backdrop.name = "KeyArt"
+	backdrop.texture = load("res://assets/img/menu_keyart.png")
+	backdrop.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	backdrop.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	backdrop.pivot_offset = get_viewport_rect().size * 0.5
+	add_child(backdrop)
+	move_child(backdrop, 1)
+	var camera_drift := create_tween().set_loops()
+	camera_drift.tween_property(backdrop, "scale", Vector2.ONE * 1.035, 22.0) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	camera_drift.tween_property(backdrop, "scale", Vector2.ONE, 22.0) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	var shade := ColorRect.new()
+	shade.name = "KeyArtShade"
+	shade.color = Color(0.005, 0.014, 0.030, 0.48)
+	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(shade)
+	move_child(shade, 2)
+	# Дополнительная затемняющая растяжка слева держит текст контрастным,
+	# не закрывая реактор и ключевой арт справа.
+	var gradient := Gradient.new()
+	gradient.set_color(0, Color(0.008, 0.020, 0.038, 0.97))
+	gradient.set_color(1, Color(0.008, 0.020, 0.038, 0.0))
+	gradient.add_point(0.58, Color(0.008, 0.020, 0.038, 0.82))
+	gradient.set_color(1, Color(0.008, 0.020, 0.038, 0.82))
+	var gradient_texture := GradientTexture2D.new()
+	gradient_texture.gradient = gradient
+	gradient_texture.fill = GradientTexture2D.FILL_LINEAR
+	gradient_texture.fill_from = Vector2(0.0, 0.5)
+	gradient_texture.fill_to = Vector2(1.0, 0.5)
+	gradient_texture.width = 1024
+	gradient_texture.height = 8
+	var left_fade := TextureRect.new()
+	left_fade.texture = gradient_texture
+	left_fade.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	left_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	left_fade.anchor_right = 0.80
+	left_fade.anchor_bottom = 1.0
+	add_child(left_fade)
+	move_child(left_fade, 3)
+
+
+func _add_ambient_particles() -> void:
+	var glow := Gradient.new()
+	glow.add_point(0.0, Color(0.58, 0.94, 1.0, 0.65))
+	glow.add_point(0.28, Color(0.18, 0.72, 1.0, 0.26))
+	glow.add_point(1.0, Color(0.10, 0.55, 1.0, 0.0))
+	var glow_texture := GradientTexture2D.new()
+	glow_texture.gradient = glow
+	glow_texture.fill = GradientTexture2D.FILL_RADIAL
+	glow_texture.width = 32
+	glow_texture.height = 32
+	var particles := CPUParticles2D.new()
+	particles.name = "AmbientDust"
+	particles.position = Vector2(576, 340)
+	particles.z_index = 0
+	particles.amount = 34
+	particles.lifetime = 8.0
+	particles.preprocess = 8.0
+	particles.emitting = true
+	particles.emission_shape = CPUParticles2D.EMISSION_SHAPE_BOX
+	particles.emission_rect_extents = Vector2(590, 330)
+	particles.direction = Vector2.UP
+	particles.spread = 180.0
+	particles.gravity = Vector2(-2.0, -5.0)
+	particles.initial_velocity_min = 3.0
+	particles.initial_velocity_max = 12.0
+	particles.scale_amount_min = 0.12
+	particles.scale_amount_max = 0.38
+	particles.color = Color(0.32, 0.88, 1.0, 0.5)
+	particles.texture = glow_texture
+	add_child(particles)
+	move_child(particles, 4)
+
+
+func _build_brand_header() -> void:
+	var profile := get_node("Main/VBox/ProfilePanel/ProfileMargin/ProfileBar") as HBoxContainer
+	var brand := VBoxContainer.new()
+	brand.name = "BrandHeader"
+	brand.custom_minimum_size.x = 152.0
+	brand.add_theme_constant_override("separation", 0)
+	var title := Label.new()
+	title.text = "TOWER DUEL"
+	title.add_theme_font_size_override("font_size", 23)
+	title.add_theme_color_override("font_color", UISkin.TEXT)
+	brand.add_child(title)
+	var subtitle := Label.new()
+	subtitle.text = "TACTICAL DEFENSE"
+	subtitle.add_theme_font_size_override("font_size", 10)
+	subtitle.add_theme_color_override("font_color", UISkin.CYAN)
+	brand.add_child(subtitle)
+	profile.add_child(brand)
+	profile.move_child(brand, 0)
+
+
+func _build_utility_buttons() -> void:
+	var row := HBoxContainer.new()
+	row.name = "UtilityButtons"
+	row.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	row.offset_left = -374.0
+	row.offset_top = 18.0
+	row.offset_right = -22.0
+	row.offset_bottom = 60.0
+	row.alignment = BoxContainer.ALIGNMENT_END
+	row.add_theme_constant_override("separation", 8)
+	add_child(row)
+	_add_utility_button(row, "НАСТРОЙКИ", func() -> void:
+		var dialog := SETTINGS_DIALOG.new()
+		add_child(dialog))
+	_add_utility_button(row, "ОБ ИГРЕ", _show_about)
+	_add_utility_button(row, "ВЫХОД", func() -> void: get_tree().quit())
+	status_label.text = "ЛУЧШИЙ РЕЗУЛЬТАТ  ·  %d" % SettingsManager.best_score
+
+
+func _add_utility_button(parent: HBoxContainer, caption: String, callback: Callable) -> void:
+	var button := Button.new()
+	button.text = caption
+	button.custom_minimum_size = Vector2(108, 40)
+	button.pressed.connect(callback)
+	parent.add_child(button)
+
+
+func _style_primary_action() -> void:
+	play_btn.text = "⚔   В БОЙ  ·  РАНГОВЫЙ ПОИСК"
+	play_btn.add_theme_font_size_override("font_size", 21)
+	play_btn.add_theme_color_override("font_color", Color(0.012, 0.055, 0.075))
+	play_btn.add_theme_color_override("font_hover_color", Color(0.012, 0.055, 0.075))
+	var normal := StyleBoxFlat.new()
+	normal.bg_color = UISkin.CYAN
+	normal.border_color = Color(0.78, 0.98, 1.0, 0.9)
+	normal.set_border_width_all(1)
+	normal.set_corner_radius_all(10)
+	normal.shadow_color = Color(UISkin.CYAN, 0.38)
+	normal.shadow_size = 12
+	var hover := normal.duplicate() as StyleBoxFlat
+	hover.bg_color = Color(0.48, 0.95, 1.0)
+	hover.shadow_size = 18
+	var pressed := normal.duplicate() as StyleBoxFlat
+	pressed.bg_color = Color(0.12, 0.65, 0.78)
+	play_btn.add_theme_stylebox_override("normal", normal)
+	play_btn.add_theme_stylebox_override("hover", hover)
+	play_btn.add_theme_stylebox_override("pressed", pressed)
+	play_btn.add_theme_stylebox_override("focus", hover)
+
+
+func _wire_button_feedback(button: Button) -> void:
+	if button == null:
+		return
+	button.mouse_entered.connect(func() -> void:
+		AudioManager.play_sfx("click", -12.0, 1.5)
+		var tween := button.create_tween()
+		tween.tween_property(button, "scale", Vector2(1.025, 1.025), 0.08)
+	)
+	button.mouse_exited.connect(func() -> void:
+		var tween := button.create_tween()
+		tween.tween_property(button, "scale", Vector2.ONE, 0.10)
+	)
+
+
+func _show_about() -> void:
+	var overlay := Control.new()
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(overlay)
+	var shade := ColorRect.new()
+	shade.color = Color(0.01, 0.02, 0.04, 0.84)
+	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	shade.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.add_child(shade)
+	var center := CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(500, 230)
+	center.add_child(panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 14)
+	panel.add_child(box)
+	var title := Label.new()
+	title.text = "TOWER DUEL  ·  ДЕМО"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 28)
+	box.add_child(title)
+	var about := Label.new()
+	about.text = "Тактическая дуэль двух стратегов. Постройте оборону,\nотправляйте волны и не дайте противнику разрушить базу.\n\nРазработка: команда Tower Duel"
+	about.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(about)
+	var close := Button.new()
+	close.text = "ЗАКРЫТЬ"
+	close.pressed.connect(overlay.queue_free)
+	box.add_child(close)
+	AudioManager.play_sfx("click")
 
 
 func _connect_signals() -> void:
@@ -136,6 +345,14 @@ func _show_tab(index: int) -> void:
 	for i in panels.size():
 		panels[i].visible = i == index
 		buttons[i].disabled = i == index   # активную вкладку не жмут повторно
+		if i == index:
+			var active_style := StyleBoxFlat.new()
+			active_style.bg_color = Color(0.05, 0.16, 0.21, 0.98)
+			active_style.border_color = Color(UISkin.CYAN, 0.92)
+			active_style.set_border_width_all(1)
+			active_style.set_corner_radius_all(8)
+			buttons[i].add_theme_stylebox_override("disabled", active_style)
+			buttons[i].add_theme_color_override("font_disabled_color", UISkin.CYAN)
 	var panel := panels[index]
 	if _tab_tween != null and _tab_tween.is_valid():
 		_tab_tween.kill()
@@ -234,6 +451,7 @@ func _make_card(id: String, which: String) -> Button:
 	card.button_pressed = (LoadoutManager.towers if which == "towers" \
 			else LoadoutManager.units).has(id)
 	card.text = _card_text(id, stats)
+	_wire_button_feedback(card)
 	card.toggled.connect(func(pressed: bool) -> void:
 		_on_card_toggled(which, id, card, pressed))
 	return card

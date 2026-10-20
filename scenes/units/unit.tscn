@@ -33,6 +33,10 @@ default_color = Color(1, 0.8, 0.45, 0.35)
 [node name="FlightHalo" type="Polygon2D" parent="."]
 color = Color(1, 1, 1, 0.25)
 
+[node name="GroundShadow" type="Polygon2D" parent="."]
+z_index = -1
+color = Color(0.005, 0.012, 0.022, 0.38)
+
 [node name="Body" type="Sprite2D" parent="."]
 
 [node name="SlowRing" type="Line2D" parent="."]

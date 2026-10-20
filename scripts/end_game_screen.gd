@@ -12,7 +12,16 @@ extends Control
 
 
 func _ready() -> void:
+	theme = UISkin.theme()
 	back_btn.pressed.connect(_on_back_pressed)
+	modulate.a = 0.0
+	var card := get_node("Center/Panel") as Control
+	card.scale = Vector2(0.94, 0.94)
+	var reveal := create_tween()
+	reveal.set_parallel(true)
+	reveal.tween_property(self, "modulate:a", 1.0, 0.22)
+	reveal.tween_property(card, "scale", Vector2.ONE, 0.32) \
+			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 
 ## defender_won — победа Защитника; stats — словарь GameState.stats;

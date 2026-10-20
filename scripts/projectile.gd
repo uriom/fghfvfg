@@ -1,8 +1,8 @@
 class_name Projectile
 extends Node2D
 ## Снаряд башни. Вид задаётся полем kind из GameDB.TOWERS:
-##   "lob"    — мортира: навесной снаряд (косметическая дуга), при попадании
-##              урон по площади с линейным спадом от центра к краю;
+##   "lob"    — мортира: баллистический навесной снаряд по точке упреждения,
+##              при попадании урон по площади с линейным спадом к краю;
 ##   "frost"  — криостан: малый урон + замедление цели (кроме летающих);
 ##   "bullet" — одиночный снаряд (универсальная перестраховка без kind).
 ##
@@ -23,6 +23,7 @@ const TRAIL_POINTS := 8    # длина хвоста (точек Line2D)
 var damage := 0.0
 var speed := 320.0
 var target: Unit = null
+var _destination := Vector2.ZERO   # у мортиры — точка упреждения, не homing-цель
 var kind := "bullet"
 var splash_radius := 0.0
 ## Доля урона на краю сплеша (из GameDB, для мортиры = 0.5).
@@ -37,6 +38,7 @@ var _traveled := 0.0
 
 # Ноды визуала (создаются в _ready, см. шапку).
 var _ball: Polygon2D
+var _core: Polygon2D
 var _shadow: Polygon2D
 var _trail: Line2D
 
@@ -53,7 +55,20 @@ func setup(from: Vector2, p_target: Unit, tower_stats: Dictionary) -> void:
 	slow_duration = float(tower_stats.get("slow_duration", 0.0))
 	pulse_radius = float(tower_stats.get("pulse_radius", pulse_radius))
 	color = tower_stats["color"]
-	_total_distance = maxf(from.distance_to(p_target.global_position), 1.0)
+	_destination = p_target.global_position if p_target != null else from
+	if kind == "lob" and p_target != null:
+		# Артиллерия стреляет по точке упреждения на дороге, а не поворачивает
+		# в воздухе вслед за целью: от снаряда можно уклониться движением.
+		var travel_time := from.distance_to(_destination) / maxf(speed, 1.0)
+		var road := p_target.get_parent() as Path2D
+		if road != null and road.curve != null:
+			var target_speed := float(p_target.stats.get("speed", 0.0))
+			if p_target.slow_timer > 0.0:
+				target_speed *= p_target.slow_factor
+			var lead_progress := minf(p_target.progress + target_speed * travel_time,
+					road.curve.get_baked_length())
+			_destination = road.to_global(road.curve.sample_baked(lead_progress))
+	_total_distance = maxf(from.distance_to(_destination), 1.0)
 	z_index = 6
 
 
@@ -63,23 +78,49 @@ func _ready() -> void:
 
 ## Сборка визуала из стандартных нод (один раз, без _draw).
 func _build_visual() -> void:
-	# Тень: слегка смещена вниз, у мортиры остаётся на «земле» под дугой.
+	# Тень нужна только навесной мортире: она остаётся на земле, пока шар
+	# визуально взлетает по дуге. Остальные снаряды идут в плоскости боя.
 	_shadow = Polygon2D.new()
-	_shadow.polygon = _circle_pts(4.0)
-	_shadow.color = Color(0, 0, 0, 0.25)
+	_shadow.polygon = _circle_pts(5.0 if kind == "lob" else 3.0)
+	_shadow.color = Color(0, 0, 0, 0.28)
 	_shadow.position = Vector2(0, 2)
+	_shadow.visible = kind == "lob"
 	add_child(_shadow)
-	# Тело снаряда: у мортиры шар крупнее и поднимается по дуге в _process.
 	_ball = Polygon2D.new()
-	_ball.polygon = _circle_pts(6.5 if kind == "lob" else 4.5)
-	_ball.color = color
+	match kind:
+		"flame":
+			# Направленное языкообразное пламя с горячим ядром, а не шар.
+			_ball.polygon = PackedVector2Array([
+				Vector2(-7, 0), Vector2(-3, -3), Vector2(0, -2),
+				Vector2(3, -1), Vector2(8, 0), Vector2(3, 1),
+				Vector2(0, 2), Vector2(-3, 3),
+			])
+			_ball.color = Color(1.0, 0.34, 0.08)
+			_core = Polygon2D.new()
+			_core.polygon = _circle_pts(2.2)
+			_core.color = Color(1.0, 0.92, 0.55)
+			_core.position = Vector2(1.5, 0.0)
+		"frost":
+			# Кристалл с холодным белым ядром — отдельный визуальный язык.
+			_ball.polygon = PackedVector2Array([
+				Vector2(0, -7), Vector2(3, -2), Vector2(2, 2),
+				Vector2(0, 6), Vector2(-2, 2), Vector2(-3, -2),
+			])
+			_ball.color = Color(0.48, 0.86, 1.0)
+			_core = Polygon2D.new()
+			_core.polygon = _circle_pts(1.5)
+			_core.color = Color(0.9, 1.0, 1.0)
+		_:
+			_ball.polygon = _circle_pts(6.5 if kind == "lob" else 4.5)
+			_ball.color = color
 	add_child(_ball)
-	# Хвост: Line2D в мировых координатах (top_level игнорирует движение
-	# родителя), дополняется в _process; след тянется за снарядом.
+	if _core != null:
+		add_child(_core)
+	# Хвост — разный вес по типу выстрела; top_level сохраняет мировые точки.
 	_trail = Line2D.new()
-	_trail.width = 2.0
+	_trail.width = 5.0 if kind == "flame" else (3.0 if kind == "frost" else 2.0)
 	_trail.top_level = true
-	_trail.default_color = Color(color, 0.55)
+	_trail.default_color = Color(color, 0.7 if kind == "flame" else 0.55)
 	_trail.z_index = 5
 	add_child(_trail)
 
@@ -94,21 +135,29 @@ func _update_trail() -> void:
 
 
 func _process(delta: float) -> void:
-	if target == null or not is_instance_valid(target) or target.is_dead:
-		queue_free()   # цель умерла или дошла до базы — снаряд не нужен
+	if kind != "lob" and (target == null or not is_instance_valid(target) or target.is_dead):
+		queue_free()   # управляемые крио/огонь теряют цель, артиллерия летит до точки
 		return
-	var to_target := target.global_position - global_position
+	var destination := _destination if kind == "lob" else target.global_position
+	var to_target := destination - global_position
 	var step := speed * delta
 	_traveled += minf(step, to_target.length())
 	if to_target.length() <= step:
+		global_position = destination
+		if kind == "lob":
+			_ball.position.y = 0.0
 		_impact()
 		return
 	global_position += to_target.normalized() * step
-	rotation = to_target.angle()   # ориентация хвоста по движению
+	rotation = to_target.angle()
 	_update_trail()
+	if kind == "flame":
+		var flicker := 0.14 * sin(float(Time.get_ticks_msec()) * 0.045 + _traveled * 0.1)
+		_ball.scale = Vector2(1.0 + flicker, 1.0 - flicker * 0.55)
+	elif kind == "frost":
+		_ball.rotation = sin(float(Time.get_ticks_msec()) * 0.006) * 0.18
 	if kind == "lob":
-		# Навесная траектория: тело летит «по дуге» (чистый визуал,
-		# попадание считается по прямой между снарядом и целью).
+		# Дуга — только высота рисунка; тень остаётся на плоскости карты.
 		var t := clampf(_traveled / _total_distance, 0.0, 1.0)
 		_ball.position.y = -sin(PI * t) * ARC_HEIGHT
 

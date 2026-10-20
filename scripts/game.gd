@@ -40,6 +40,7 @@ func _ready() -> void:
 
 	# Дорога: Line2D повторяет кривую Path2D, база стоит в её конце.
 	$Road/RoadLine.points = road.curve.get_baked_points()
+	_build_road_visuals()
 	_spawn_base_marker()
 	GameState.base_hp_changed.connect(_on_base_hp_changed)
 
@@ -52,6 +53,9 @@ func _ready() -> void:
 	GameState.game_ended.connect(_on_game_ended)
 	NetworkManager.opponent_left.connect(_on_opponent_left)
 	AudioManager.play_music("bgm")
+	var pause_menu := preload("res://scripts/pause_menu.gd").new()
+	pause_menu.name = "PauseMenu"
+	add_child(pause_menu)
 
 
 func _process(delta: float) -> void:
@@ -91,6 +95,92 @@ func _wave_stalled() -> bool:
 	return get_tree().get_nodes_in_group("units").is_empty()
 
 
+# ---------------------------------------------------------- Поле боя --------
+
+## Несколько аккуратных слоёв вместо одинокой коричневой Line2D:
+## тёмная подложка, металлическая кромка, холодный асфальт, боковые рельсы
+## и редкие световые маркеры направления.
+func _build_road_visuals() -> void:
+	var points := road.curve.get_baked_points()
+	var shadow := Line2D.new()
+	shadow.name = "RoadShadow"
+	shadow.points = points
+	shadow.width = 78.0
+	shadow.default_color = Color(0.008, 0.016, 0.026, 0.98)
+	shadow.z_index = -5
+	$Road.add_child(shadow)
+	var shoulder := Line2D.new()
+	shoulder.name = "RoadShoulder"
+	shoulder.points = points
+	shoulder.width = 62.0
+	shoulder.default_color = Color(0.045, 0.075, 0.10, 1.0)
+	shoulder.z_index = -4
+	$Road.add_child(shoulder)
+	var asphalt := Line2D.new()
+	asphalt.name = "RoadSurface"
+	asphalt.points = points
+	asphalt.width = 50.0
+	asphalt.default_color = Color(0.085, 0.12, 0.15, 1.0)
+	asphalt.z_index = -3
+	$Road.add_child(asphalt)
+	var edges := [Line2D.new(), Line2D.new()]
+	var edge_points := [PackedVector2Array(), PackedVector2Array()]
+	for i in points.size():
+		var previous := points[maxi(i - 1, 0)]
+		var next := points[mini(i + 1, points.size() - 1)]
+		var tangent := (next - previous).normalized()
+		var normal := Vector2(-tangent.y, tangent.x)
+		edge_points[0].append(points[i] + normal * 27.0)
+		edge_points[1].append(points[i] - normal * 27.0)
+	for i in 2:
+		edges[i].name = "RoadNeonEdge%d" % i
+		edges[i].points = edge_points[i]
+		edges[i].width = 1.5
+		edges[i].default_color = Color(0.16, 0.72, 0.86, 0.55) if i == 0 \
+				else Color(0.95, 0.62, 0.25, 0.28)
+		edges[i].z_index = 0
+		$Road.add_child(edges[i])
+	_add_lane_dashes()
+	_add_lane_pulses()
+
+
+func _add_lane_dashes() -> void:
+	var length := road.curve.get_baked_length()
+	for distance in range(30, int(length) - 18, 62):
+		var dash := Line2D.new()
+		dash.width = 1.4
+		dash.default_color = Color(0.74, 0.90, 0.95, 0.22)
+		dash.z_index = 0
+		dash.points = PackedVector2Array([
+			road.curve.sample_baked(distance),
+			road.curve.sample_baked(minf(float(distance + 18), length)),
+		])
+		$Road.add_child(dash)
+
+
+func _add_lane_pulses() -> void:
+	var length := road.curve.get_baked_length()
+	for i in 3:
+		var follower := PathFollow2D.new()
+		follower.name = "LanePulse%d" % i
+		follower.loop = true
+		follower.rotates = false
+		follower.progress = length * float(i) / 3.0
+		follower.z_index = 1
+		$Road.add_child(follower)
+		var pip := Polygon2D.new()
+		pip.polygon = PackedVector2Array([
+			Vector2(0, -3.5), Vector2(2.0, 0), Vector2(0, 3.5), Vector2(-2.0, 0),
+		])
+		pip.color = Color(0.30, 0.91, 1.0, 0.82)
+		pip.scale = Vector2(1.5, 1.0)
+		follower.add_child(pip)
+		var pulse := create_tween().set_loops()
+		pulse.tween_property(follower, "progress", length, 18.0).from(length * float(i) / 3.0) \
+				.set_trans(Tween.TRANS_LINEAR)
+			pulse.tween_property(follower, "progress", 0.0, 0.001)
+
+
 # -------------------------------------------------------------- База --------
 # Правило проекта: НИКАКОГО процедурного рисования (_draw). Маркер базы —
 # три стандартные ноды Polygon2D (кольцо, диск, ядро), собранные в коде.
@@ -126,6 +216,11 @@ func _spawn_base_marker() -> void:
 	_base_marker.add_child(_core_poly)
 	road.add_child(_base_marker)
 	_refresh_base_visual()
+	var core_pulse := create_tween().set_loops()
+	core_pulse.tween_property(_core_poly, "scale", Vector2(1.16, 1.16), 0.72) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	core_pulse.tween_property(_core_poly, "scale", Vector2.ONE, 0.72) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 
 
 ## Перекраска диска/ядра под текущее HP (без единого вызова _draw).
@@ -148,10 +243,20 @@ func _on_base_hp_changed(_hp: int, _max_hp: int) -> void:
 
 func _on_game_ended(defender_won: bool) -> void:
 	var i_won := (my_role == NetworkManager.Role.DEFENDER) == defender_won
+	var local_score := 0
+	if my_role == NetworkManager.Role.DEFENDER:
+		local_score = int(GameState.stats.get("units_killed", 0)) * 100 \
+				+ GameState.base_hp * 25 + int(GameState.stats.get("towers_built", 0)) * 10
+	else:
+		local_score = int(GameState.stats.get("units_leaked", 0)) * 100 \
+				+ int(GameState.stats.get("waves_sent", 0)) * 25 \
+				+ int(GameState.stats.get("units_sent", 0)) * 5
+	SettingsManager.record_score(local_score)
 	AudioManager.stop_music()
 	AudioManager.play_sfx("victory" if i_won else "defeat", -2.0)
 	# Экран статистики: одинаковые цифры у обоих (слепок сервера).
 	var screen := END_SCREEN.instantiate()
+	screen.theme = UISkin.theme()
 	$UI.add_child(screen)
 	screen.setup(defender_won, GameState.stats, my_role)
 
