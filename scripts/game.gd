@@ -178,7 +178,7 @@ func _add_lane_pulses() -> void:
 		var pulse := create_tween().set_loops()
 		pulse.tween_property(follower, "progress", length, 18.0).from(length * float(i) / 3.0) \
 				.set_trans(Tween.TRANS_LINEAR)
-			pulse.tween_property(follower, "progress", 0.0, 0.001)
+		pulse.tween_property(follower, "progress", 0.0, 0.001)
 
 
 # -------------------------------------------------------------- База --------
