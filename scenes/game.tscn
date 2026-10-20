@@ -1,16 +1,15 @@
-[gd_scene load_steps=9 format=3]
+[gd_scene load_steps=8 format=3]
 
 [ext_resource type="Script" path="res://scripts/game.gd" id="1_game"]
 [ext_resource type="Script" path="res://scripts/map.gd" id="2_map"]
 [ext_resource type="Script" path="res://scripts/unit_spawner.gd" id="3_unitspawner"]
 [ext_resource type="Script" path="res://scripts/defender_hud.gd" id="4_defhud"]
 [ext_resource type="Script" path="res://scripts/attacker_hud.gd" id="5_atkhud"]
-[ext_resource type="Script" path="res://scripts/wave_display.gd" id="6_wave"]
 [ext_resource type="Texture2D" path="res://assets/img/arena_bg.png" id="7_bg"]
 
 [sub_resource type="Curve2D" id="Curve2D_road"]
 _data = {
-"points": PackedVector2Array(0, 0, 0, 0, 40, 150, 0, 0, 0, 0, 1112, 150, 0, 0, 0, 0, 1112, 500, 0, 0, 0, 0, 40, 500),
+"points": PackedVector2Array(0, 0, 0, 0, 64, 130, 0, 0, 0, 0, 1088, 130, 0, 0, 0, 0, 1088, 340, 0, 0, 0, 0, 64, 340),
 "point_count": 4
 }
 
@@ -44,6 +43,7 @@ script = ExtResource("3_unitspawner")
 unique_name_in_owner = true
 script = ExtResource("2_map")
 road_node_path = NodePath("../Road")
+buildable_rect = Rect2(0, 64, 1152, 320)
 
 [node name="Towers" type="Node2D" parent="Map"]
 
@@ -64,48 +64,17 @@ grow_vertical = 2
 mouse_filter = 2
 script = ExtResource("4_defhud")
 
-[node name="AttackerHUD" type="VBoxContainer" parent="UI"]
+[node name="AttackerHUD" type="Control" parent="UI"]
 unique_name_in_owner = true
 visible = false
 layout_mode = 3
-anchors_preset = 1
-anchor_left = 1.0
+anchors_preset = 15
 anchor_right = 1.0
-offset_left = -612.0
-offset_top = 14.0
-offset_right = -16.0
-offset_bottom = 520.0
-grow_horizontal = 0
+anchor_bottom = 1.0
+grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 2
-theme_override_constants/separation = 4
 script = ExtResource("5_atkhud")
-
-[node name="WaveLabel" type="Control" parent="UI/AttackerHUD"]
-custom_minimum_size = Vector2(280, 44)
-layout_mode = 2
-mouse_filter = 2
-script = ExtResource("6_wave")
-
-[node name="GoldLabel" type="Label" parent="UI/AttackerHUD"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 20
-text = "Золото: 0"
-
-[node name="HPLabel" type="Label" parent="UI/AttackerHUD"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 20
-text = "База врага: 20 / 20 HP"
-
-[node name="HintLabel" type="Label" parent="UI/AttackerHUD"]
-layout_mode = 2
-modulate = Color(1, 1, 1, 0.65)
-text = "Выбирайте момент атаки и давите волнами."
-
-[node name="UnitButtons" type="VBoxContainer" parent="UI/AttackerHUD"]
-layout_mode = 2
-mouse_filter = 2
-theme_override_constants/separation = 6
 
 [node name="Result" type="Label" parent="UI"]
 unique_name_in_owner = true

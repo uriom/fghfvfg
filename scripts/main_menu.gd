@@ -7,6 +7,14 @@ extends Control
 ## Поиск матча ведёт SteamManager.quick_play(): статусы приходят в
 ## matchmaking_status («Идет поиск соперника… [00:12]»), отмена — кнопкой.
 
+const SETTINGS_DIALOG := preload("res://scripts/settings_dialog.gd")
+
+var _lobby_ids: Array[int] = []
+var _tab_tween: Tween
+var _utility_row: HBoxContainer
+var _key_art: TextureRect
+var _loadout_tile_width := 200.0
+
 @onready var avatar_rect: TextureRect = %Avatar
 @onready var avatar_initial: Label = %AvatarInitial
 @onready var profile_name: Label = %ProfileName
@@ -46,12 +54,6 @@ extends Control
 
 @onready var status_label: Label = %Status
 
-## Индексы ItemList -> id Steam-лобби (custom-таб).
-var _lobby_ids: Array[int] = []
-var _tab_tween: Tween
-const SETTINGS_DIALOG := preload("res://scripts/settings_dialog.gd")
-
-
 func _ready() -> void:
 	theme = UISkin.theme()
 	_build_menu_backdrop()
@@ -67,12 +69,15 @@ func _ready() -> void:
 	_setup_role_pref()
 	_build_loadout_cards()
 	_show_tab(0)
+	get_viewport().size_changed.connect(_fit_responsive_layout)
+	call_deferred("_fit_responsive_layout")
 	AudioManager.play_music("bgm")
 	play_btn.grab_focus()
 
 
 func _build_menu_backdrop() -> void:
 	var backdrop := TextureRect.new()
+	_key_art = backdrop
 	backdrop.name = "KeyArt"
 	backdrop.texture = load("res://assets/img/menu_keyart.png")
 	backdrop.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
@@ -80,6 +85,7 @@ func _build_menu_backdrop() -> void:
 	backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	backdrop.pivot_offset = get_viewport_rect().size * 0.5
+	backdrop.resized.connect(func() -> void: backdrop.pivot_offset = backdrop.size * 0.5)
 	add_child(backdrop)
 	move_child(backdrop, 1)
 	var camera_drift := create_tween().set_loops()
@@ -173,6 +179,7 @@ func _build_brand_header() -> void:
 
 func _build_utility_buttons() -> void:
 	var row := HBoxContainer.new()
+	_utility_row = row
 	row.name = "UtilityButtons"
 	row.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	row.offset_left = -374.0
@@ -188,6 +195,44 @@ func _build_utility_buttons() -> void:
 	_add_utility_button(row, "ОБ ИГРЕ", _show_about)
 	_add_utility_button(row, "ВЫХОД", func() -> void: get_tree().quit())
 	status_label.text = "ЛУЧШИЙ РЕЗУЛЬТАТ  ·  %d" % SettingsManager.best_score
+
+
+func _fit_responsive_layout() -> void:
+	if not is_inside_tree():
+		return
+	var viewport_size := get_viewport_rect().size
+	var width := viewport_size.x
+	# Сохраняем отступ между основной колонкой и верхними кнопками, но
+	# постепенно сжимаем колонки/карточки при уменьшении окна.
+	var ratio := lerpf(0.56, 0.62, clampf((width - 960.0) / 192.0, 0.0, 1.0))
+	var column_width := minf(width * ratio, 740.0)
+	var content_width := maxf(0.0, column_width - 56.0)
+	var tile_width := maxf(112.0, (content_width - 20.0) / 3.0)
+	_loadout_tile_width = tile_width
+	var main_column := get_node_or_null("Main") as Control
+	if main_column != null and width > 0.0:
+		main_column.anchor_right = column_width / width
+	var tab_row := get_node_or_null("Main/VBox/Tabs") as HBoxContainer
+	if tab_row != null:
+		var tab_width := maxf(96.0, (content_width - 20.0) / 3.0)
+		for child in tab_row.get_children():
+			if child is Button:
+				(child as Button).custom_minimum_size.x = tab_width
+				(child as Button).add_theme_font_size_override(
+						"font_size", 11 if tab_width < 132.0 else 14)
+		for grid in [tower_grid, unit_grid]:
+			for child in grid.get_children():
+				if child is Button:
+					(child as Button).custom_minimum_size.x = tile_width
+					(child as Button).add_theme_font_size_override(
+						"font_size", 11 if tile_width < 150.0 else 13 if tile_width < 185.0 else 15)
+	if _utility_row != null:
+		for child in _utility_row.get_children():
+			if child is Button:
+				(child as Button).custom_minimum_size.x = minf(108.0,
+						maxf(82.0, (width - 44.0) / 3.0))
+	if _key_art != null:
+		_key_art.pivot_offset = _key_art.size * 0.5
 
 
 func _add_utility_button(parent: HBoxContainer, caption: String, callback: Callable) -> void:
@@ -260,7 +305,9 @@ func _show_about() -> void:
 	title.add_theme_font_size_override("font_size", 28)
 	box.add_child(title)
 	var about := Label.new()
-	about.text = "Тактическая дуэль двух стратегов. Постройте оборону,\nотправляйте волны и не дайте противнику разрушить базу.\n\nРазработка: команда Tower Duel"
+	about.text = "Тактическая дуэль двух стратегов. Постройте оборону,\n" \
+			+ "отправляйте волны и не дайте противнику разрушить базу.\n\n" \
+			+ "Разработка: команда Tower Duel"
 	about.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(about)
 	var close := Button.new()
@@ -433,8 +480,10 @@ func _on_matchmaking_stopped(reason: String) -> void:
 ## добавить нельзя (клик отбивается), меньше — можно, добор дефолтами.
 func _build_loadout_cards() -> void:
 	for child in tower_grid.get_children():
+		tower_grid.remove_child(child)
 		child.queue_free()
 	for child in unit_grid.get_children():
+		unit_grid.remove_child(child)
 		child.queue_free()
 	for tower_id in GameDB.TOWER_ORDER:
 		tower_grid.add_child(_make_card(tower_id, "towers"))
@@ -447,7 +496,7 @@ func _make_card(id: String, which: String) -> Button:
 	var stats: Dictionary = (GameDB.TOWERS if which == "towers" else GameDB.UNITS)[id]
 	var card := Button.new()
 	card.toggle_mode = true
-	card.custom_minimum_size = Vector2(200, 96)
+	card.custom_minimum_size = Vector2(_loadout_tile_width, 96)
 	card.button_pressed = (LoadoutManager.towers if which == "towers" \
 			else LoadoutManager.units).has(id)
 	card.text = _card_text(id, stats)
