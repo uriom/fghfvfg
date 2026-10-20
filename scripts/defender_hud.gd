@@ -1,12 +1,12 @@
 extends Control
-## HUD Защитника — верхняя статус-панель + левая голографическая сетка
+## HUD Защитника — верхняя статус-панель + нижняя горизонтальная полоса
 ## снаряжения. Полностью собран из стандартных Control-нод:
 ## PanelContainer / StyleBoxFlat / Label / ProgressBar / TextureButton /
 ## TextureRect / ColorRect. Ни одного _draw.
 ##
 ## ЧТО ЗДЕСЬ ЕСТЬ:
 ##   * Верхняя панель: WAVE-индикатор, GOLD, полоса BASE HP с неоновым свечением.
-##   * Карточки башен: вертикальный дека-грид, иконка 2.5D, свечение выбора,
+##   * Карточки башен: горизонтальная дека-полоса в нижней зоне, иконка 2.5D,
 ##     статусы READY / SELECTED / LOW FUNDS, затемнение при нехватке золота.
 ##   * Hover/selection поднимают тактический радиус на земле через GameMap.
 ##   * Панч-анимации золота/HP и всплывающая дельта («+100», «−50»).
@@ -19,7 +19,7 @@ const WAVE_DISPLAY_SCRIPT := preload("res://scripts/wave_display.gd")
 # --- Геометрия (рассчитана под 1152x648, canvas_items) ----------------------
 const TOP_BAR_HEIGHT := 64.0
 const SIDE_MARGIN := 16.0
-const LOADOUT_WIDTH := 238.0
+const LOADOUT_WIDTH := 680.0
 const CARD_SIZE := Vector2(206.0, 126.0)
 const CARD_GAP := 9.0
 
@@ -57,7 +57,7 @@ var _base_label: Label
 var _base_fill: StyleBoxFlat
 
 var _loadout_panel: PanelContainer
-var _cards_box: VBoxContainer
+var _cards_box: HBoxContainer
 var _slots_label: Label
 
 # tower_id -> Dictionary с дочерними нодами и параметрами карточки.
@@ -91,6 +91,7 @@ func _ready() -> void:
 	GameState.base_hp_changed.connect(_on_base_hp_changed)
 	GameState.game_ended.connect(_on_game_ended)
 	visibility_changed.connect(_on_visibility_changed)
+	resized.connect(_fit_loadout_panel)
 
 	_refresh_from_state()
 	# Нужно для самостоятельного запуска HUD-сцены; в матче game.gd вызовет
@@ -232,7 +233,7 @@ func _build_base_bar(parent: HBoxContainer) -> void:
 	_base_bar.add_child(_base_label)
 
 
-# ------------------------------------------------------ Левая панель деки -----
+# ---------------------------------------------------- Нижняя панель деки -----
 
 func _build_loadout() -> void:
 	_loadout_panel = PanelContainer.new()
@@ -242,7 +243,6 @@ func _build_loadout() -> void:
 	_loadout_panel.add_theme_stylebox_override("panel", _panel_style(
 			PANEL_BG, Color(CYAN, 0.22), 1, 10, Color(0, 0, 0, 0.55), 14))
 	add_child(_loadout_panel)
-	_loadout_panel.position = Vector2(SIDE_MARGIN, TOP_BAR_HEIGHT + 16.0)
 
 	var margin := MarginContainer.new()
 	margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -262,7 +262,7 @@ func _build_loadout() -> void:
 	header.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	column.add_child(header)
 
-	var header_title := _label("DEFENSE GRID", 13, TEXT, 2)
+	var header_title := _label("TOWER LOADOUT", 13, TEXT, 2)
 	header.add_child(header_title)
 	var header_spacer := Control.new()
 	header_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -277,7 +277,7 @@ func _build_loadout() -> void:
 	rule.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	column.add_child(rule)
 
-	_cards_box = VBoxContainer.new()
+	_cards_box = HBoxContainer.new()
 	_cards_box.add_theme_constant_override("separation", int(CARD_GAP))
 	_cards_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	column.add_child(_cards_box)
@@ -822,10 +822,16 @@ func _diamond(color: Color, size_px: float) -> Control:
 
 
 func _fit_loadout_panel() -> void:
-	if _loadout_panel == null:
+	if _loadout_panel == null or not is_inside_tree():
 		return
+	var viewport_size := get_viewport_rect().size
+	var panel_width := minf(LOADOUT_WIDTH, viewport_size.x - SIDE_MARGIN * 2.0)
 	var required := _loadout_panel.get_combined_minimum_size()
-	_loadout_panel.size = Vector2(LOADOUT_WIDTH, required.y)
+	var panel_height := required.y
+	_loadout_panel.size = Vector2(panel_width, panel_height)
+	_loadout_panel.position = Vector2(
+			(viewport_size.x - panel_width) * 0.5,
+			maxf(TOP_BAR_HEIGHT + 8.0, viewport_size.y - panel_height - 12.0))
 
 
 func _local_peer() -> int:
