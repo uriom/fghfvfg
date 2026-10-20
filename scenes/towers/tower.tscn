@@ -1,0 +1,24 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/tower.gd" id="1_tower"]
+
+[node name="Tower" type="Node2D"]
+z_index = 3
+script = ExtResource("1_tower")
+
+[node name="RangeDisc" type="Polygon2D" parent="."]
+color = Color(1, 1, 1, 0.04)
+
+[node name="RangeRing" type="Line2D" parent="."]
+width = 1.5
+closed = true
+default_color = Color(1, 1, 1, 0.1)
+
+[node name="SplashRing" type="Line2D" parent="."]
+width = 2
+closed = true
+visible = false
+
+[node name="BaseSprite" type="Sprite2D" parent="."]
+
+[node name="TurretSprite" type="Sprite2D" parent="."]

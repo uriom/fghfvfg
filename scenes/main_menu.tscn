@@ -1,0 +1,288 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/main_menu.gd" id="1_menu"]
+
+[node name="MainMenu" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_menu")
+
+[node name="Bg" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.078, 0.09, 0.11, 1)
+
+[node name="Main" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 28
+theme_override_constants/margin_top = 18
+theme_override_constants/margin_right = 28
+theme_override_constants/margin_bottom = 18
+
+[node name="VBox" type="VBoxContainer" parent="Main"]
+layout_mode = 2
+theme_override_constants/separation = 14
+
+[node name="ProfilePanel" type="PanelContainer" parent="Main/VBox"]
+layout_mode = 2
+
+[node name="ProfileMargin" type="MarginContainer" parent="Main/VBox/ProfilePanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 10
+
+[node name="ProfileBar" type="HBoxContainer" parent="Main/VBox/ProfilePanel/ProfileMargin"]
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="Avatar" type="TextureRect" parent="Main/VBox/ProfilePanel/ProfileMargin/ProfileBar"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(48, 48)
+layout_mode = 2
+stretch_mode = 5
+
+[node name="AvatarInitial" type="Label" parent="Main/VBox/ProfilePanel/ProfileMargin/ProfileBar/Avatar"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/font_size = 26
+text = "?"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="ProfileName" type="Label" parent="Main/VBox/ProfilePanel/ProfileMargin/ProfileBar"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 22
+text = "Игрок"
+
+[node name="ProfileRank" type="Label" parent="Main/VBox/ProfilePanel/ProfileMargin/ProfileBar"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 10
+theme_override_font_sizes/font_size = 22
+text = "Бронза"
+horizontal_alignment = 2
+
+[node name="ProfileMMR" type="Label" parent="Main/VBox/ProfilePanel/ProfileMargin/ProfileBar"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+modulate = Color(1, 1, 1, 0.7)
+text = "1000 MMR"
+horizontal_alignment = 2
+
+[node name="Tabs" type="HBoxContainer" parent="Main/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="TabHomeBtn" type="Button" parent="Main/VBox/Tabs"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(180, 0)
+layout_mode = 2
+text = "ГЛАВНАЯ"
+
+[node name="TabLoadoutBtn" type="Button" parent="Main/VBox/Tabs"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(180, 0)
+layout_mode = 2
+text = "СНАРЯЖЕНИЕ"
+
+[node name="TabFriendBtn" type="Button" parent="Main/VBox/Tabs"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(180, 0)
+layout_mode = 2
+text = "ИГРА С ДРУГОМ"
+
+[node name="Panels" type="VBoxContainer" parent="Main/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="HomePanel" type="VBoxContainer" parent="Main/VBox/Panels"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="RolePrefOption" type="OptionButton" parent="Main/VBox/Panels/HomePanel"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(320, 0)
+layout_mode = 2
+
+[node name="PlayBtn" type="Button" parent="Main/VBox/Panels/HomePanel"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 64)
+layout_mode = 2
+theme_override_font_sizes/font_size = 28
+text = "⚔  В БОЙ  (ранговый поиск)"
+
+[node name="CancelSearchBtn" type="Button" parent="Main/VBox/Panels/HomePanel"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+text = "Отменить поиск"
+
+[node name="SearchStatus" type="Label" parent="Main/VBox/Panels/HomePanel"]
+unique_name_in_owner = true
+layout_mode = 2
+modulate = Color(1, 1, 1, 0.8)
+theme_override_font_sizes/font_size = 17
+text = " "
+
+[node name="PlayerList" type="Label" parent="Main/VBox/Panels/HomePanel"]
+unique_name_in_owner = true
+layout_mode = 2
+text = " "
+
+[node name="TransportOption" type="OptionButton" parent="Main/VBox/Panels/HomePanel"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(320, 0)
+layout_mode = 2
+
+[node name="LoadoutPanel" type="VBoxContainer" parent="Main/VBox/Panels"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="TowerHeader" type="Label" parent="Main/VBox/Panels/LoadoutPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 19
+text = "Башни Защитника — 3/3"
+
+[node name="TowerGrid" type="GridContainer" parent="Main/VBox/Panels/LoadoutPanel"]
+unique_name_in_owner = true
+columns = 3
+theme_override_constants/h_separation = 10
+theme_override_constants/v_separation = 10
+
+[node name="UnitHeader" type="Label" parent="Main/VBox/Panels/LoadoutPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 19
+text = "Юниты Штурмовика — 3/3"
+
+[node name="UnitGrid" type="GridContainer" parent="Main/VBox/Panels/LoadoutPanel"]
+unique_name_in_owner = true
+columns = 3
+theme_override_constants/h_separation = 10
+theme_override_constants/v_separation = 10
+
+[node name="ResetLoadoutBtn" type="Button" parent="Main/VBox/Panels/LoadoutPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Сбросить к стандартным"
+
+[node name="LoadoutStatus" type="Label" parent="Main/VBox/Panels/LoadoutPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+modulate = Color(1, 1, 1, 0.65)
+text = " "
+
+[node name="FriendPanel" type="VBoxContainer" parent="Main/VBox/Panels"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="NameRow" type="HBoxContainer" parent="Main/VBox/Panels/FriendPanel"]
+layout_mode = 2
+
+[node name="NameLabel" type="Label" parent="Main/VBox/Panels/FriendPanel/NameRow"]
+layout_mode = 2
+text = "Имя:  "
+
+[node name="NameEdit" type="LineEdit" parent="Main/VBox/Panels/FriendPanel/NameRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(210, 0)
+layout_mode = 2
+text = "Игрок"
+
+[node name="IpRow" type="HBoxContainer" parent="Main/VBox/Panels/FriendPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="IpLabel" type="Label" parent="Main/VBox/Panels/FriendPanel/IpRow"]
+layout_mode = 2
+text = "IP хоста:"
+
+[node name="IpEdit" type="LineEdit" parent="Main/VBox/Panels/FriendPanel/IpRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(210, 0)
+layout_mode = 2
+text = "127.0.0.1"
+
+[node name="EnetButtons" type="HBoxContainer" parent="Main/VBox/Panels/FriendPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="HostBtn" type="Button" parent="Main/VBox/Panels/FriendPanel/EnetButtons"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Создать лобби (ENet) — Защитник"
+
+[node name="JoinBtn" type="Button" parent="Main/VBox/Panels/FriendPanel/EnetButtons"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Подключиться — Штурмовик"
+
+[node name="SteamCustomRow" type="HBoxContainer" parent="Main/VBox/Panels/FriendPanel"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="SteamHostBtn" type="Button" parent="Main/VBox/Panels/FriendPanel/SteamCustomRow"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Steam: создать custom-лобби"
+
+[node name="SteamInviteBtn" type="Button" parent="Main/VBox/Panels/FriendPanel/SteamCustomRow"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+text = "Пригласить друга (Overlay)"
+
+[node name="SteamRefreshBtn" type="Button" parent="Main/VBox/Panels/FriendPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Steam: найти открытые лобби"
+
+[node name="LobbyList" type="ItemList" parent="Main/VBox/Panels/FriendPanel"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 120)
+layout_mode = 2
+
+[node name="StartBtn" type="Button" parent="Main/VBox/Panels/FriendPanel"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(0, 52)
+layout_mode = 2
+theme_override_font_sizes/font_size = 22
+text = "НАЧАТЬ МАТЧ!"
+
+[node name="Status" type="Label" parent="Main/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+modulate = Color(1, 1, 1, 0.7)
+text = " "

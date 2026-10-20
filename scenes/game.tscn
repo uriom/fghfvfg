@@ -1,0 +1,115 @@
+[gd_scene load_steps=8 format=3]
+
+[ext_resource type="Script" path="res://scripts/game.gd" id="1_game"]
+[ext_resource type="Script" path="res://scripts/map.gd" id="2_map"]
+[ext_resource type="Script" path="res://scripts/unit_spawner.gd" id="3_unitspawner"]
+[ext_resource type="Script" path="res://scripts/defender_hud.gd" id="4_defhud"]
+[ext_resource type="Script" path="res://scripts/attacker_hud.gd" id="5_atkhud"]
+[ext_resource type="Script" path="res://scripts/wave_display.gd" id="6_wave"]
+
+[sub_resource type="Curve2D" id="Curve2D_road"]
+_data = {
+"points": PackedVector2Array(0, 0, 0, 0, 40, 150, 0, 0, 0, 0, 1112, 150, 0, 0, 0, 0, 1112, 500, 0, 0, 0, 0, 40, 500),
+"point_count": 4
+}
+
+[node name="Game" type="Node2D"]
+script = ExtResource("1_game")
+
+[node name="Camera" type="Camera2D" parent="."]
+position = Vector2(576, 324)
+groups = ["game_camera"]
+
+[node name="Road" type="Path2D" parent="."]
+curve = SubResource("Curve2D_road")
+
+[node name="RoadLine" type="Line2D" parent="Road"]
+z_index = -1
+width = 44.0
+default_color = Color(0.23, 0.19, 0.15, 1)
+
+[node name="UnitSpawner" type="MultiplayerSpawner" parent="Road"]
+unique_name_in_owner = true
+spawn_path = NodePath("..")
+script = ExtResource("3_unitspawner")
+
+[node name="Map" type="Node2D" parent="."]
+unique_name_in_owner = true
+script = ExtResource("2_map")
+road_node_path = NodePath("../Road")
+
+[node name="Towers" type="Node2D" parent="Map"]
+
+[node name="TowerSpawner" type="MultiplayerSpawner" parent="Map"]
+spawn_path = NodePath("../Towers")
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="DefenderHUD" type="Control" parent="UI"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("4_defhud")
+
+[node name="AttackerHUD" type="VBoxContainer" parent="UI"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 3
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -560.0
+offset_top = 10.0
+offset_right = -12.0
+offset_bottom = 240.0
+grow_horizontal = 0
+grow_vertical = 2
+mouse_filter = 2
+theme_override_constants/separation = 4
+script = ExtResource("5_atkhud")
+
+[node name="WaveLabel" type="Control" parent="UI/AttackerHUD"]
+custom_minimum_size = Vector2(280, 44)
+layout_mode = 2
+mouse_filter = 2
+script = ExtResource("6_wave")
+
+[node name="GoldLabel" type="Label" parent="UI/AttackerHUD"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 20
+text = "Золото: 0"
+
+[node name="HPLabel" type="Label" parent="UI/AttackerHUD"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 20
+text = "База врага: 20 / 20 HP"
+
+[node name="HintLabel" type="Label" parent="UI/AttackerHUD"]
+layout_mode = 2
+modulate = Color(1, 1, 1, 0.65)
+text = "Отправляйте юнитов и ломайте оборону!"
+
+[node name="UnitButtons" type="VBoxContainer" parent="UI/AttackerHUD"]
+layout_mode = 2
+mouse_filter = 2
+theme_override_constants/separation = 6
+
+[node name="Result" type="Label" parent="UI"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme_override_font_sizes/font_size = 52
+horizontal_alignment = 1
+vertical_alignment = 1

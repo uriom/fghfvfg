@@ -1,0 +1,52 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/unit.gd" id="1_unit"]
+
+[sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_unit"]
+properties/0/path = NodePath(".:progress")
+properties/0/spawn = true
+properties/0/replication_mode = 1
+properties/1/path = NodePath(".:hp")
+properties/1/spawn = true
+properties/1/replication_mode = 2
+properties/2/path = NodePath(".:slow_timer")
+properties/2/spawn = true
+properties/2/replication_mode = 2
+properties/3/path = NodePath(".:slow_factor")
+properties/3/spawn = true
+properties/3/replication_mode = 2
+
+[node name="Unit" type="PathFollow2D"]
+z_index = 5
+rotates = false
+loop = false
+script = ExtResource("1_unit")
+
+[node name="AuraDisc" type="Polygon2D" parent="."]
+color = Color(1, 0.85, 0.5, 0.04)
+
+[node name="AuraRing" type="Line2D" parent="."]
+width = 2
+closed = true
+default_color = Color(1, 0.8, 0.45, 0.35)
+
+[node name="FlightHalo" type="Polygon2D" parent="."]
+color = Color(1, 1, 1, 0.25)
+
+[node name="Body" type="Sprite2D" parent="."]
+
+[node name="SlowRing" type="Line2D" parent="."]
+width = 2.5
+closed = true
+default_color = Color(0.55, 0.85, 1, 0.9)
+visible = false
+
+[node name="HpBarBg" type="Polygon2D" parent="."]
+color = Color(0, 0, 0, 0.55)
+
+[node name="HpBar" type="Polygon2D" parent="."]
+color = Color(0.3, 0.9, 0.3, 1)
+
+[node name="Sync" type="MultiplayerSynchronizer" parent="."]
+replication_interval = 0.2
+replication_config = SubResource("SceneReplicationConfig_unit")
