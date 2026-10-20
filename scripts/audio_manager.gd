@@ -24,6 +24,9 @@ const CHOKE_MS := 45            # мин. пауза между одинаков
 const MAX_PER_FRAME := 6        # антиспам: максимум запусков за один кадр
 const MUSIC_VOLUME_DB := -14.0
 
+var _master_volume := 1.0
+var _music_volume := 0.72
+var _sfx_volume := 0.85
 var _pool: Array[AudioStreamPlayer] = []
 var _music: AudioStreamPlayer
 var _next := 0
@@ -65,6 +68,21 @@ func _exit_tree() -> void:
 
 # ------------------------------------------------------------- Публичное ----
 
+## Применить сохранённые локальные уровни общей громкости, музыки и SFX.
+func apply_volumes(master: float, music: float, sfx: float) -> void:
+	_master_volume = clampf(master, 0.0, 1.0)
+	_music_volume = clampf(music, 0.0, 1.0)
+	_sfx_volume = clampf(sfx, 0.0, 1.0)
+	if _music != null:
+		_music.volume_db = MUSIC_VOLUME_DB + _volume_db(_master_volume * _music_volume)
+	for player in _pool:
+		player.volume_db = _volume_db(_master_volume * _sfx_volume)
+
+
+func _volume_db(linear: float) -> float:
+	return linear_to_db(maxf(linear, 0.0001))
+
+
 ## Запустить звук. volume_db — добавка к громкости, pitch можно варьировать.
 func play_sfx(sound_name: String, volume_db := 0.0, pitch := 1.0) -> void:
 	if not _streams.has(sound_name):
@@ -81,7 +99,7 @@ func play_sfx(sound_name: String, volume_db := 0.0, pitch := 1.0) -> void:
 	var player := _pool[_next]
 	_next = (_next + 1) % _pool.size()
 	player.stream = _streams[sound_name]
-	player.volume_db = volume_db
+	player.volume_db = _volume_db(_master_volume * _sfx_volume) + volume_db
 	# Лёгкая случайная вариация высоты — звук «живой», не механический.
 	player.pitch_scale = pitch * randf_range(0.95, 1.05)
 	player.play()
@@ -93,6 +111,7 @@ func play_music(track_name := "bgm") -> void:
 	if _music.playing and _music.stream == _streams[track_name]:
 		return
 	_music.stream = _streams[track_name]
+	_music.volume_db = MUSIC_VOLUME_DB + _volume_db(_master_volume * _music_volume)
 	_music.play()
 
 
@@ -189,6 +208,7 @@ func _generate_library() -> void:
 	_streams["beam"] = _make_wav(_tone(1500.0, 220.0, 0.12, 0.45))                       # снайпер: «зап»
 	_streams["lob_fire"] = _make_wav(_mix(_tone(160.0, 60.0, 0.15, 0.55), _noise(0.08, 0.22)))  # мортира: хлопок
 	_streams["frost_fire"] = _make_wav(_tone(1100.0, 1600.0, 0.08, 0.2))                 # криостан: «пшик»
+	_streams["flame_fire"] = _make_wav(_mix(_noise(0.10, 0.34), _tone(170.0, 70.0, 0.12, 0.28))) # огонь: короткий факел
 	_streams["boom"] = _make_wav(_mix(_noise(0.4, 0.75), _tone(180.0, 40.0, 0.4, 0.6)))  # взрыв сплеша
 	_streams["frost"] = _make_wav(_mix(_tone(880.0, 860.0, 0.18, 0.25), _tone(1318.0, 1290.0, 0.22, 0.2)))  # ледяной звон
 

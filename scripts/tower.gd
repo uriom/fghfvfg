@@ -1,6 +1,6 @@
 class_name Tower
 extends Node2D
-## Башня Защитника: ищет цель, поворачивает ствол, атакует по специализации.
+## Башня Защитника: ищет цель и атакует по специализации.
 ##
 ## СЕТЕВАЯ МОДЕЛЬ (не менялась): поиск цели выполняется НА ВСЕХ пирах
 ## одинаково — клиент видит атаки без трафика. Урон наносит только сервер:
@@ -8,22 +8,17 @@ extends Node2D
 ##   * "lob"/"frost"/"flame" — Projectile летает у всех, урон — на сервере;
 ##   * "chain"         — цепная молния Теслы, урон — сервер, FX — RPC.
 ##
-## ВИЗУАЛ 2.5D: сцена tower.tscn =
-##   Tower -> BaseSprite (Sprite2D, статичная платформа, НЕ вращается)
-##         -> TurretSprite (Sprite2D, вращается к цели + отдача через Tween).
-## Текстуры берутся из res://assets/img/<tower_id>.jpg. Арт считается
-## направленным ВВЕРХ (-Y), поэтому к углу цели добавляется ART_FORWARD.
+## ВИЗУАЛ 2.5D: у каждой башни цельный PNG-арт, который рисуется ОДИН раз.
+## Старый вариант накладывал две копии одной полной иллюстрации и вращал
+## верхнюю: платформа двоилась и ствол выглядел оторванным. Теперь полный
+## спрайт остаётся целым, а выстрел читается по вспышке/трассеру/снаряду.
 ## Зона обстрела — служебные RangeDisc/RangeRing (Polygon2D/Line2D).
 
-const BODY_RADIUS := 18.0      # радиус дула: вылет снаряда от центра башни
+const BODY_RADIUS := 18.0      # точка вспышки/вылета снаряда от центра башни
 const CIRCLE_SEGMENTS := 48
-## Арт башен нарисован «стволом влево» (-X): спрайт доворачиваем на 180°,
-## чтобы направление арта совпало с направлением на цель (угол 0 = +X).
-const ART_FORWARD := PI
-const RECOIL_DISTANCE := 7.0   # глубина отката ствола, px
-const RECOIL_TIME := 0.15      # время возврата в исходную позицию, сек
-const BASE_SIZE := 46.0        # к какому размеру вписывать платформу, px
-const TURRET_SIZE := 38.0      # ... и вращающуюся башню, px
+const RECOIL_DISTANCE := 2.5   # лёгкий импульс цельного арта при выстреле
+const RECOIL_TIME := 0.12
+const BASE_SIZE := 50.0        # размер цельной читаемой иллюстрации, px
 
 var tower_id := ""
 var owner_peer := 1
@@ -65,11 +60,9 @@ func _physics_process(delta: float) -> void:
 	_update_target()
 	if _target == null:
 		return
-	# Вращаем ТОЛЬКО TurretSprite: платформа стоит на месте.
-	# Угол цели + поправка на ориентацию арта; global_rotation — чтобы
-	# повороты родителей (если появятся) не ломали наведение.
+	# Иллюстрация башни цельная, не разрезаем и не дублируем её ради
+	# визуального наведения. Точный угол всё равно задаёт muzzle/projectile.
 	var aim_angle := (_target.global_position - global_position).angle()
-	turret_sprite.global_rotation = aim_angle + ART_FORWARD
 	if _cooldown == 0.0:
 		_shoot(aim_angle)
 
@@ -98,6 +91,8 @@ func _shoot(aim_angle: float) -> void:
 	var muzzle := global_position + Vector2.from_angle(aim_angle) * BODY_RADIUS
 	_play_recoil(aim_angle)
 	var kind := String(stats.get("kind", "bullet"))
+	if kind != "beam":
+		_spawn_muzzle_flash(muzzle, aim_angle)
 	match kind:
 		"beam":
 			# Хитскан: урон и эффекты — только сервер. Клиент увидит луч,
@@ -115,7 +110,7 @@ func _shoot(aim_angle: float) -> void:
 			if kind == "lob":
 				AudioManager.play_sfx("lob_fire", -4.0)
 			elif kind == "flame":
-				AudioManager.play_sfx("frost_fire", -8.0, 0.7)   # «шквал» огня
+				AudioManager.play_sfx("flame_fire", -9.0, 1.1)
 			else:
 				AudioManager.play_sfx("frost_fire", -4.0)
 			var projectile := Projectile.new()
@@ -123,16 +118,34 @@ func _shoot(aim_angle: float) -> void:
 			get_parent().add_child(projectile)
 
 
-## Процедурная отдача: мгновенно откатываем TurretSprite НАЗАД по текущему
-## углу стрельбы, затем Tween плавно возвращает её в Vector2.ZERO.
-## Перезапуск kill_tween() — при очередном выстреле отдача начинается заново.
+## Короткий импульс цельной башни и отдельная цветная вспышка в дуле.
 func _play_recoil(aim_angle: float) -> void:
 	if _recoil_tween != null and _recoil_tween.is_valid():
 		_recoil_tween.kill()
-	turret_sprite.position = Vector2.from_angle(aim_angle) * -RECOIL_DISTANCE
+	base_sprite.position = Vector2.from_angle(aim_angle) * -RECOIL_DISTANCE
 	_recoil_tween = create_tween()
-	_recoil_tween.tween_property(turret_sprite, "position", Vector2.ZERO, RECOIL_TIME) \
+	_recoil_tween.tween_property(base_sprite, "position", Vector2.ZERO, RECOIL_TIME) \
 			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+
+
+func _spawn_muzzle_flash(muzzle: Vector2, aim_angle: float) -> void:
+	var flash := Polygon2D.new()
+	flash.polygon = PackedVector2Array([
+		Vector2(5, 0), Vector2(2, -2), Vector2(0, -6), Vector2(-2, -2),
+		Vector2(-5, 0), Vector2(-2, 2), Vector2(0, 6), Vector2(2, 2),
+	])
+	flash.color = Color(stats["color"], 0.95)
+	flash.rotation = aim_angle
+	flash.z_index = 9
+	get_parent().add_child(flash)
+	flash.global_position = muzzle
+	flash.scale = Vector2(0.35, 0.35)
+	var flash_tween := create_tween()
+	flash_tween.set_parallel(true)
+	flash_tween.tween_property(flash, "scale", Vector2.ONE * 1.7, 0.09) \
+			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	flash_tween.tween_property(flash, "modulate:a", 0.0, 0.09)
+	flash_tween.chain().tween_callback(flash.queue_free)
 
 
 ## Цепная молния Теслы: главная цель + до N соседних звеньев с затуханием
@@ -194,19 +207,17 @@ func _build_visual() -> void:
 	range_ring.points = _circle_line(float(stats["range"]))
 	# Кольцо сплеша мортиры (остальным не нужно).
 	if String(stats.get("kind")) == "lob":
-		splash_ring.points = _circle_line(
-				float(stats.get("splash_radius", 60.0)) * 0.35)
+		splash_ring.points = _circle_line(float(stats.get("splash_radius", 60.0)))
 		splash_ring.default_color = Color(stats["color"], 0.35)
 		splash_ring.visible = true
-	# Спрайты: платформа чуть темнее (лежит «на земле»), башня сверху
-	# вращается. Пока арт один на тип — используем одну текстуру дважды;
-	# когда появятся отдельные спрайты платформы, просто заменить texture.
+	# В assets лежит целая иллюстрация башни, а не раздельные база/ствол.
+	# Рисуем её ровно один раз: две наложенные копии давали двоение корпуса.
+	base_sprite.visible = tex != null
+	turret_sprite.visible = false
 	if tex != null:
 		base_sprite.texture = tex
 		base_sprite.scale = Vector2.ONE * _fit_scale(tex, BASE_SIZE)
-		base_sprite.modulate = Color(0.75, 0.75, 0.8)
-		turret_sprite.texture = tex
-		turret_sprite.scale = Vector2.ONE * _fit_scale(tex, TURRET_SIZE)
+		base_sprite.modulate = Color.WHITE
 
 
 ## Точки замкнутой окружности радиуса r (для Line2D с closed = true).

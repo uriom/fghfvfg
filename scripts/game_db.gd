@@ -25,6 +25,7 @@ const UNITS := {
 		"kill_reward": 8,    # золото защитнику за убийство
 		"flying": false,
 		"ignores_slow": false,
+		"art_forward": 2.9,      # nose faces lower-left in source sprite
 		"color": Color(0.4, 0.8, 1.0),
 	},
 	"tank": {
@@ -37,6 +38,7 @@ const UNITS := {
 		"kill_reward": 20,
 		"flying": false,
 		"ignores_slow": false,
+		"art_forward": 1.57,
 		"aura_radius": 110.0,    # радиус защитной ауры (рисуется у юнита)
 		"aura_reduction": 0.35,  # -35% входящего урона союзникам в радиусе
 		"color": Color(1.0, 0.55, 0.3),
@@ -51,6 +53,7 @@ const UNITS := {
 		"kill_reward": 12,
 		"flying": true,
 		"ignores_slow": true,    # летающие не замедляются криостаном
+		"art_forward": -0.45,
 		"color": Color(0.8, 0.45, 1.0),
 	},
 	"rider": {
@@ -63,6 +66,7 @@ const UNITS := {
 		"kill_reward": 11,
 		"flying": false,
 		"ignores_slow": false,
+		"art_forward": 2.45,
 		"color": Color(0.55, 0.9, 0.35),
 	},
 	"boss": {
@@ -75,6 +79,7 @@ const UNITS := {
 		"kill_reward": 70,
 		"flying": false,
 		"ignores_slow": false,
+		"art_forward": 1.57,
 		"radius": 21.0,          # крупный корпус (рисование + радиус сплеша)
 		"color": Color(0.95, 0.3, 0.35),
 	},

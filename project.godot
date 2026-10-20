@@ -10,7 +10,7 @@ config_version=5
 
 [application]
 
-config/name="tod"
+config/name="Tower Duel Demo"
 run/main_scene="res://scenes/main_menu.tscn"
 config/features=PackedStringArray("4.5", "Forward Plus")
 config/icon="res://icon.svg"
@@ -23,6 +23,7 @@ NetworkManager="*res://autoload/network_manager.gd"
 GameState="*res://autoload/game_state.gd"
 FXManager="*res://autoload/fx_manager.gd"
 AudioManager="*res://scripts/audio_manager.gd"
+SettingsManager="*res://scripts/settings_manager.gd"
 
 [display]
 
@@ -31,4 +32,4 @@ window/size/viewport_height=648
 window/size/window_width_override=1152
 window/size/window_height_override=648
 window/stretch/mode="canvas_items"
-window/stretch/aspect="keep"
+window/stretch/aspect="expand"

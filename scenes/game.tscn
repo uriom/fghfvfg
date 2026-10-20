@@ -1,4 +1,4 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene load_steps=9 format=3]
 
 [ext_resource type="Script" path="res://scripts/game.gd" id="1_game"]
 [ext_resource type="Script" path="res://scripts/map.gd" id="2_map"]
@@ -6,6 +6,7 @@
 [ext_resource type="Script" path="res://scripts/defender_hud.gd" id="4_defhud"]
 [ext_resource type="Script" path="res://scripts/attacker_hud.gd" id="5_atkhud"]
 [ext_resource type="Script" path="res://scripts/wave_display.gd" id="6_wave"]
+[ext_resource type="Texture2D" path="res://assets/img/arena_bg.png" id="7_bg"]
 
 [sub_resource type="Curve2D" id="Curve2D_road"]
 _data = {
@@ -16,6 +17,12 @@ _data = {
 [node name="Game" type="Node2D"]
 script = ExtResource("1_game")
 
+[node name="ArenaBackdrop" type="Sprite2D" parent="."]
+position = Vector2(576, 324)
+scale = Vector2(0.801, 0.801)
+z_index = -20
+texture = ExtResource("7_bg")
+
 [node name="Camera" type="Camera2D" parent="."]
 position = Vector2(576, 324)
 groups = ["game_camera"]
@@ -25,8 +32,8 @@ curve = SubResource("Curve2D_road")
 
 [node name="RoadLine" type="Line2D" parent="Road"]
 z_index = -1
-width = 44.0
-default_color = Color(0.23, 0.19, 0.15, 1)
+width = 46.0
+default_color = Color(0.10, 0.16, 0.21, 1.0)
 
 [node name="UnitSpawner" type="MultiplayerSpawner" parent="Road"]
 unique_name_in_owner = true
@@ -64,10 +71,10 @@ layout_mode = 3
 anchors_preset = 1
 anchor_left = 1.0
 anchor_right = 1.0
-offset_left = -560.0
-offset_top = 10.0
-offset_right = -12.0
-offset_bottom = 240.0
+offset_left = -612.0
+offset_top = 14.0
+offset_right = -16.0
+offset_bottom = 520.0
 grow_horizontal = 0
 grow_vertical = 2
 mouse_filter = 2
@@ -93,7 +100,7 @@ text = "База врага: 20 / 20 HP"
 [node name="HintLabel" type="Label" parent="UI/AttackerHUD"]
 layout_mode = 2
 modulate = Color(1, 1, 1, 0.65)
-text = "Отправляйте юнитов и ломайте оборону!"
+text = "Выбирайте момент атаки и давите волнами."
 
 [node name="UnitButtons" type="VBoxContainer" parent="UI/AttackerHUD"]
 layout_mode = 2

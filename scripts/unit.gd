@@ -6,16 +6,11 @@ extends PathFollow2D
 ## раз в 0.2 сек присылает точные progress/hp/slow через MultiplayerSynchronizer
 ## и правит дрейф; урон принимается только на сервере (take_damage).
 ##
-## ВИЗУАЛ 2.5D: Body — Sprite2D с текстурой res://assets/img/<unit_id>.jpg.
-## Процедурная анимация ходьбы (Tween-циклы, создаются один раз в _ready):
-##   * fast/rider — «бег»: покачивание Body по Y (+-4px за 0.25с) и
-##     вибрация поворота (+-2° за 0.12с) — сема семенящих шагов;
-##   * tank/boss — «тяжёлый шаг»: цикл сплющивания/растяжения масштаба
-##     (1.1;0.9) <-> (0.9;1.1) за 0.3с — вес и инерция массы;
-##   * flying — парение: медленный «дыхательный» боб + полупрозрачный
-##     ореол FlightHalo.
-## Твины анимируют ТОЛЬКО ноду Body (и её свойства), поэтому полоска HP,
-## кольцо ауры и маркеры остаются неподвижными относительно дороги.
+## ВИЗУАЛ 2.5D: Body — Sprite2D с полным PNG-артом юнита.
+## Наземные модели получили анимированный нижний stride в шейдере + лёгкий
+## bounce/lean корпуса; тяжёлые шагают медленнее, не сминаясь как резина.
+## Flying парит отдельно. Только Body анимируется: HP и игровые маркеры
+## остаются стабильными относительно дороги.
 
 const RADIUS := 13.0
 ## Сегментов у «окружностей» (аура, ореол полёта, кольцо замедления).
@@ -27,11 +22,10 @@ const RUN_BOB_STEP := 0.25        # сек на полшага (вверх ил�
 const RUN_SHAKE_ANGLE := 2.0      # градусы, вибрация поворота при беге
 const RUN_SHAKE_STEP := 0.12      # сек на одно отклонение
 const HEAVY_STEP := 0.3           # сек на полцикла squash/stretch
-const HEAVY_SCALE_A := Vector2(1.1, 0.9)   # сплющено
-const HEAVY_SCALE_B := Vector2(0.9, 1.1)   # вытянуто
 const FLY_BOB_AMPLITUDE := 3.0    # px, амплитуда парения
 const FLY_BOB_STEP := 0.5         # сек, медленно — «дыхание»
-const SPRITE_SIZE := 34.0         # вписывание спрайта юнита, px
+const SPRITE_SIZE := 40.0         # размер нового читаемого арта юнита, px
+const GAIT_SHADER := preload("res://shaders/unit_gait.gdshader")
 
 var unit_id := ""
 var attacker_peer := 1          # кто отправил юнита
@@ -57,10 +51,13 @@ var slow_factor: float = 1.0    # множитель скорости (1.0 — �
 
 var _bar_pos := Vector2.ZERO   # верхний левый угол полоски HP
 var _bar_width := 0.0          # её полная ширина
+var _body_pivot: Node2D
+var _facing_initialized := false
 
 @onready var aura_disc: Polygon2D = $AuraDisc
 @onready var aura_ring: Line2D = $AuraRing
 @onready var flight_halo: Polygon2D = $FlightHalo
+@onready var ground_shadow: Polygon2D = $GroundShadow
 @onready var body_sprite: Sprite2D = $Body
 @onready var slow_ring: Line2D = $SlowRing
 @onready var hp_bar_bg: Polygon2D = $HpBarBg
@@ -83,6 +80,7 @@ func _ready() -> void:
 	stats = GameDB.UNITS[unit_id]
 	hp = stats["hp"]
 	_build_visual()
+	_install_body_pivot()
 	_start_locomotion()
 	# Звук спавна: _ready выполняется на обоих пирах (спавн через
 	# MultiplayerSpawner), поэтому сетевого вызова не требуется.
@@ -100,6 +98,7 @@ func _process(delta: float) -> void:
 	if slow_timer > 0.0 and not stats.get("ignores_slow", false):
 		speed_mult = slow_factor
 	progress += stats["speed"] * speed_mult * delta
+	_orient_to_road(delta)
 	if multiplayer.is_server() and progress_ratio >= 1.0:
 		_reach_base()
 
@@ -194,6 +193,10 @@ func _fit_scale(tex: Texture2D, target_size: float) -> float:
 
 func _build_visual() -> void:
 	var r := get_radius()
+	ground_shadow.polygon = _circle_pts(r + 3.0)
+	ground_shadow.scale = Vector2(1.3, 0.48) if not stats["flying"] else Vector2(1.0, 0.38)
+	ground_shadow.position = Vector2(0.0, r * 0.42)
+	ground_shadow.color = Color(0.005, 0.012, 0.022, 0.42 if not stats["flying"] else 0.24)
 	# Аура танка: полупрозрачный диск + кольцо радиуса защиты.
 	if stats.has("aura_radius"):
 		aura_disc.polygon = _circle_pts(float(stats["aura_radius"]))
@@ -214,6 +217,13 @@ func _build_visual() -> void:
 	if tex != null:
 		body_sprite.texture = tex
 		body_sprite.scale = Vector2.ONE * _fit_scale(tex, SPRITE_SIZE + (r - RADIUS) * 2.0)
+		if not stats["flying"]:
+			var gait := ShaderMaterial.new()
+			gait.shader = GAIT_SHADER
+			gait.set_shader_parameter("gait_speed", 4.6 if stats.has("radius") or stats.has("aura_radius") else 8.0)
+			gait.set_shader_parameter("gait_amount", 0.035)
+			gait.set_shader_parameter("gait_phase", float(spawn_index % 9) * 0.71)
+			body_sprite.material = gait
 	else:
 		body_sprite.visible = false
 	# Полоска HP над корпусом.
@@ -223,40 +233,61 @@ func _build_visual() -> void:
 	_update_hp_bar()
 
 
-## Процедурная «ходьба»: бесконечные Tween-циклы на свойствах Body.
-## Создаются один раз; умирают вместе с юнитом (queue_free убивает твины).
+## Вращаем только BodyPivot по касательной пути: полоска HP, аура и кольца
+## остаются горизонтальными. art_forward задаёт направление «вперёд» в текстуре.
+func _install_body_pivot() -> void:
+	var old_index := body_sprite.get_index()
+	remove_child(body_sprite)
+	_body_pivot = Node2D.new()
+	_body_pivot.name = "BodyPivot"
+	add_child(_body_pivot)
+	move_child(_body_pivot, old_index)
+	_body_pivot.add_child(body_sprite)
+
+
+func _orient_to_road(delta: float) -> void:
+	if _body_pivot == null:
+		return
+	var road := get_parent() as Path2D
+	if road == null or road.curve == null:
+		return
+	var before := road.curve.sample_baked(maxf(progress - 5.0, 0.0))
+	var after := road.curve.sample_baked(progress + 5.0)
+	var direction := road.to_global(after) - road.to_global(before)
+	if direction.length_squared() < 0.001:
+		return
+	var desired := direction.angle() - float(stats.get("art_forward", 0.0))
+	if not _facing_initialized:
+		_body_pivot.rotation = desired
+		_facing_initialized = true
+	else:
+		_body_pivot.rotation = lerp_angle(_body_pivot.rotation, desired, clampf(delta * 10.0, 0.0, 1.0))
+
+
+## Пружинящий бег: небольшая gait-деформация нижней части текстуры,
+## синхронная с вертикальным шагом и наклоном корпуса. Летающие парят.
 func _start_locomotion() -> void:
-	var is_heavy := stats.has("aura_radius") or stats.has("radius")   # tank/boss
-	if stats["flying"]:
-		# Парение: медленный боб вверх-вниз вокруг нуля.
-		var fly := create_tween().set_loops()
-		fly.tween_property(body_sprite, "position:y", -FLY_BOB_AMPLITUDE, FLY_BOB_STEP) \
+	var heavy := stats.has("aura_radius") or stats.has("radius")
+	var bob_amplitude := FLY_BOB_AMPLITUDE if stats["flying"] else (1.5 if heavy else 2.5)
+	var half_step := FLY_BOB_STEP if stats["flying"] else (HEAVY_STEP if heavy else RUN_BOB_STEP)
+	var bob := create_tween().set_loops()
+	bob.tween_property(body_sprite, "position:y", -bob_amplitude, half_step) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	bob.tween_property(body_sprite, "position:y", bob_amplitude, half_step) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	if not stats["flying"]:
+		var tilt := create_tween().set_loops()
+		var angle := deg_to_rad(1.8 if heavy else 2.6)
+		var tilt_step := HEAVY_STEP if heavy else RUN_SHAKE_STEP * 2.0
+		tilt.tween_property(body_sprite, "rotation", angle, tilt_step) \
 				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-		fly.tween_property(body_sprite, "position:y", FLY_BOB_AMPLITUDE, FLY_BOB_STEP) \
-				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-	elif is_heavy:
-		# Тяжёлый шаг: цикл сплющивания/растяжения — «перекатывание» массы.
-		# Масштаб применяем к спрайту, а не к юниту: HP-бар не деформируется.
-		var walk := create_tween().set_loops()
-		walk.tween_property(body_sprite, "scale",
-				body_sprite.scale * HEAVY_SCALE_A, HEAVY_STEP) \
-				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-		walk.tween_property(body_sprite, "scale",
-				body_sprite.scale * HEAVY_SCALE_B, HEAVY_STEP) \
+		tilt.tween_property(body_sprite, "rotation", -angle, tilt_step) \
 				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	else:
-		# Бег: частый боб по Y + мелкая вибрация поворота (два независимых
-		# цикла — шаги и дрожь корпуса слегка рассинхронизированы, так живее).
-		var bob := create_tween().set_loops()
-		bob.tween_property(body_sprite, "position:y", -RUN_BOB_AMPLITUDE, RUN_BOB_STEP) \
+		var breathe := create_tween().set_loops()
+		breathe.tween_property(flight_halo, "scale", Vector2.ONE * 1.12, FLY_BOB_STEP) \
 				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-		bob.tween_property(body_sprite, "position:y", RUN_BOB_AMPLITUDE, RUN_BOB_STEP) \
-				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-		var shake := create_tween().set_loops()
-		var rad := deg_to_rad(RUN_SHAKE_ANGLE)
-		shake.tween_property(body_sprite, "rotation", rad, RUN_SHAKE_STEP) \
-				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-		shake.tween_property(body_sprite, "rotation", -rad, RUN_SHAKE_STEP) \
+		breathe.tween_property(flight_halo, "scale", Vector2.ONE * 0.94, FLY_BOB_STEP) \
 				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 
 
