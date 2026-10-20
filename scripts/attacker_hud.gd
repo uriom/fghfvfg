@@ -53,8 +53,10 @@ func _build_panel_backdrop() -> void:
 	style.bg_color = Color(0.012, 0.028, 0.048, 0.94)
 	style.border_color = Color(UISkin.CYAN, 0.38)
 	panel.add_theme_stylebox_override("panel", style)
-	get_parent().add_child(panel)
-	get_parent().move_child(panel, get_index())
+	get_parent().add_child.call_deferred(panel)
+	await get_tree().process_frame
+	if is_instance_valid(panel):
+		get_parent().move_child(panel, get_index())
 
 
 func _meter_style(fill: Color) -> StyleBoxFlat:

@@ -136,7 +136,7 @@ func _add_ambient_particles() -> void:
 	particles.lifetime = 8.0
 	particles.preprocess = 8.0
 	particles.emitting = true
-	particles.emission_shape = CPUParticles2D.EMISSION_SHAPE_BOX
+	particles.emission_shape = CPUParticles2D.EMISSION_SHAPE_RECTANGLE
 	particles.emission_rect_extents = Vector2(590, 330)
 	particles.direction = Vector2.UP
 	particles.spread = 180.0

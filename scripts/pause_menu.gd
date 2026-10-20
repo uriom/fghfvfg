@@ -11,10 +11,10 @@ var _settings_open := false
 
 
 func _ready() -> void:
-	theme = UISkin.theme()
 	layer = 30
 	_root = Control.new()
 	_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_root.theme = UISkin.theme()
 	_root.visible = false
 	add_child(_root)
 	_build()
