@@ -31,6 +31,10 @@ var occupied: Dictionary = {}    # Vector2i -> true (клетки с башня�
 ## Тип башни, выбранный в HUD. Дефолт — первый из дека Защитника этого
 ## матча (GameDB.TOWER_ORDER — только запасной вариант для старых сейвов).
 var build_tower_id: String = GameDB.TOWER_ORDER[0]
+## Клавиатурный/геймпадный курсор постройки. HOVER_INVALID = игрок ещё не
+## пользовался крестовиной, мышь остаётся главным устройством.
+var _keys_cell := Vector2i(-1, -1)
+var _keys_mode := false
 
 var _road_points := PackedVector2Array()
 var _hover_cell := HOVER_INVALID
@@ -219,6 +223,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not active:
 		return
 	if event is InputEventMouseMotion:
+		# Мышь перехватывает управление обратно — так игрок не «теряет» курсор.
+		_keys_mode = false
 		var new_cell := world_to_cell(get_global_mouse_position())
 		if new_cell != _hover_cell:
 			_hover_cell = new_cell
@@ -226,9 +232,61 @@ func _unhandled_input(event: InputEvent) -> void:
 			_update_range_preview_position()
 	elif event is InputEventMouseButton and event.pressed \
 			and event.button_index == MOUSE_BUTTON_LEFT:
+		_keys_mode = false
 		_hover_cell = world_to_cell(get_global_mouse_position())
 		_update_hover_rect()
 		_request_build(_hover_cell)
+
+
+## Клавиатура и геймпад: крестовина двигает курсор по клеткам, A/Enter
+## строит, B/Esc отменяет. Вызывается ДО GUI (_input), чтобы фокус на
+## карточке башни не съедал подтверждение.
+func _input(event: InputEvent) -> void:
+	if not active or not GameState.is_planning():
+		return
+	if not (event is InputEventKey or event is InputEventJoypadButton \
+			or event is InputEventJoypadMotion):
+		return
+	var step := Vector2i.ZERO
+	if event.is_action_pressed("ui_left"):
+		step = Vector2i.LEFT
+	elif event.is_action_pressed("ui_right"):
+		step = Vector2i.RIGHT
+	elif event.is_action_pressed("ui_up"):
+		step = Vector2i.UP
+	elif event.is_action_pressed("ui_down"):
+		step = Vector2i.DOWN
+	if step != Vector2i.ZERO:
+		_move_keys_cursor(step)
+		get_viewport().set_input_as_handled()
+	elif _keys_mode and event.is_action_pressed("ui_accept"):
+		_request_build(_keys_cell)
+		get_viewport().set_input_as_handled()
+	elif _keys_mode and event.is_action_pressed("ui_cancel"):
+		_keys_mode = false
+		_hover_cell = HOVER_INVALID
+		_update_hover_rect()
+		get_viewport().set_input_as_handled()
+
+
+## Стартовая позиция курсора — центр зоны строительства.
+func _move_keys_cursor(step: Vector2i) -> void:
+	if not _keys_mode:
+		_keys_mode = true
+		var start := Vector2i(buildable_rect.position) / cell_size
+		var end := Vector2i(buildable_rect.end) / cell_size
+		_keys_cell = Vector2i((start.x + end.x) / 2, (start.y + end.y) / 2)
+	var rect := Rect2(Vector2(buildable_rect.position), Vector2(buildable_rect.size))
+	var candidate := _keys_cell + step
+	var centre := cell_to_center(candidate)
+	# Курсор не выходит за зону строительства: край — жёсткая граница.
+	if rect.has_point(centre):
+		_keys_cell = candidate
+	if _keys_cell != _hover_cell:
+		_hover_cell = _keys_cell
+		_last_preview_cell = _hover_cell
+		_update_hover_rect()
+		_update_range_preview_position()
 
 
 # --------------------------------------------------------------- Сетка ------
@@ -245,8 +303,25 @@ func cell_to_center(cell: Vector2i) -> Vector2:
 # ------------------------------------------------------ Постройка башен -----
 
 ## Локальный Защитник кликнул по клетке: просим сервер подтвердить постройку.
+## Все причины отказа проговариваются игроку (звук + подпись у клетки):
+## раньше клик по занятой клетке или без денег просто ничего не делал.
 func _request_build(cell: Vector2i) -> void:
+	if not GameState.is_planning():
+		_deny_build(cell, "ТОЛЬКО В ПОДГОТОВКЕ")
+		return
 	if not is_cell_buildable(cell) or occupied.has(cell):
+		_deny_build(cell, "ЗДЕСЬ НЕЛЬЗЯ")
+		return
+	if tower_count(build_tower_id) >= GameDB.MAX_TOWERS_PER_TYPE:
+		_deny_build(cell, "ЛИМИТ %d НА ТИП" % GameDB.MAX_TOWERS_PER_TYPE)
+		return
+	if total_towers() >= GameDB.MAX_TOWERS_TOTAL:
+		_deny_build(cell, "ВСЕ %d СЛОТОВ ЗАНЯТЫ" % GameDB.MAX_TOWERS_TOTAL)
+		return
+	var cost := int(GameDB.TOWERS[build_tower_id]["cost"])
+	var gold := int(GameState.gold.get(multiplayer.get_unique_id(), 0))
+	if gold < cost:
+		_deny_build(cell, "НЕ ХВАТАЕТ %d" % (cost - gold))
 		return
 	if multiplayer.is_server():
 		# Хост и есть Защитник, а RPC на самого себя не доставляется
@@ -255,6 +330,26 @@ func _request_build(cell: Vector2i) -> void:
 		_server_place_tower(GameState.defender_peer, cell, build_tower_id)
 	else:
 		place_tower_request.rpc_id(1, cell, build_tower_id)   # 1 = сервер (хост)
+
+
+## Отказ с обратной связью: звук + всплывающая подпись над клеткой.
+func _deny_build(cell: Vector2i, reason: String) -> void:
+	AudioManager.play_sfx("deny", -6.0)
+	FXManager.hint(cell_to_center(cell), reason, Color(1.0, 0.45, 0.45))
+
+
+## Сколько башен указанного типа уже стоит.
+func tower_count(tower_id: String) -> int:
+	var count := 0
+	for tower in $Towers.get_children():
+		if tower is Tower and (tower as Tower).tower_id == tower_id:
+			count += 1
+	return count
+
+
+## Всего построено башен (лимит MAX_TOWERS_TOTAL).
+func total_towers() -> int:
+	return $Towers.get_child_count()
 
 
 func is_cell_buildable(cell: Vector2i) -> bool:
@@ -289,22 +384,32 @@ func place_tower_request(cell: Vector2i, tower_id: String) -> void:
 
 
 ## Серверная валидация и проведение постройки. sender — peer, платящий золото.
+## Строить можно только в ПОДГОТОВКЕ и только в пределах лимитов:
+## 2 башни одного типа, 8 всего (SPEC-02) — иначе дек «3 из 5» ничего не значит.
 func _server_place_tower(sender: int, cell: Vector2i, tower_id: String) -> void:
-	if GameState.game_over:
-		return
-	if sender != GameState.defender_peer:
-		return   # строить разрешено только Защитнику
-	if not GameDB.TOWERS.has(tower_id):
-		return
-	if not GameState.defender_towers.has(tower_id):
-		return   # башни вне дека этого матча запрещены (анти-чит)
-	if occupied.has(cell) or not is_cell_buildable(cell):
+	if not _can_place_tower(sender, cell, tower_id):
 		return
 	# Списываем золото; при неудаче (мало денег) постройка отменяется.
 	if not GameState.try_spend(sender, GameDB.TOWERS[tower_id]["cost"]):
 		return
 	GameState.record_tower_built()   # статистика + ачивка MASTER_BUILDER
 	_confirm_tower.rpc(cell, tower_id, sender)
+
+
+## Все правила постройки в одном месте (роль, дек, фаза, лимиты, клетка).
+func _can_place_tower(sender: int, cell: Vector2i, tower_id: String) -> bool:
+	if GameState.game_over or not GameState.is_planning():
+		return false
+	# Строить разрешено только Защитнику, и только из своего дека.
+	if sender != GameState.defender_peer or not GameDB.TOWERS.has(tower_id):
+		return false
+	if not GameState.defender_towers.has(tower_id):
+		return false   # башни вне дека этого матча запрещены (анти-чит)
+	if tower_count(tower_id) >= GameDB.MAX_TOWERS_PER_TYPE:
+		return false
+	if total_towers() >= GameDB.MAX_TOWERS_TOTAL:
+		return false
+	return not occupied.has(cell) and is_cell_buildable(cell)
 
 
 ## Подтверждённая постройка: выполняется на ОБОИХ пирах (call_local).
@@ -371,6 +476,10 @@ func _update_hover_rect() -> void:
 	if _grid_root == null:
 		return
 	if _hover_cell == HOVER_INVALID or not active:
+		_hover_rect.visible = false
+		return
+	# В штурме строить нельзя — сетка гаснет, чтобы не обещать обратное.
+	if not GameState.is_planning():
 		_hover_rect.visible = false
 		return
 	var rect := Rect2(Vector2(_hover_cell) * Vector2(cell_size), Vector2(cell_size))

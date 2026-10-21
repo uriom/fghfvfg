@@ -105,17 +105,29 @@ func _process(delta: float) -> void:
 
 ## Наносит урон. Вызывается ТОЛЬКО на сервере (снарядами башен).
 ## number_kind — вид цифры урона (FXManager.DMG_*), чтобы отличать сплеш.
-func take_damage(amount: float, number_kind := FXManager.DMG_NORMAL) -> void:
+## damage_type — тип урона башни (GameDB.DAMAGE_MATRIX); пустой = без матрицы.
+##
+## COMBAT v2: сначала применяется матрица «тип урона × класс брони», затем
+## аура танка. Показываем и списываем ТОЛЬКО реально снятое HP — иначе в труп
+## улетали цифры на 20 при остатке 3 и статистика урона врала.
+func take_damage(amount: float, number_kind := FXManager.DMG_NORMAL,
+		damage_type := "") -> void:
 	if not multiplayer.is_server() or is_dead:
 		return
 	var final := amount
 	var kind := number_kind
+	if damage_type != "":
+		final *= GameDB.damage_multiplier(damage_type, GameDB.armor_of(stats))
 	# Аура танка: если рядом живой танк-союзник (кроме самого юнита),
 	# входящий урон снижен. Чисто серверная механика.
 	var aura := _tank_aura_reduction()
 	if aura > 0.0:
 		final *= 1.0 - aura
 		kind = FXManager.DMG_PROTECTED
+	# Оверкилл не показываем: цифра и списание равны остатку HP.
+	final = minf(final, hp)
+	if final <= 0.0:
+		return
 	# Цифру урона показывает сервер (RPC call_local): у обоих игроков
 	# одинаково, привязано к фактическому (авторитетному) урону.
 	FXManager.damage_number.rpc(global_position, final, kind)

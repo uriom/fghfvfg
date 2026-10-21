@@ -123,7 +123,8 @@ func stop_music() -> void:
 # Маленькая «студия»: тон с огибающей, шум, микс/склейка, упаковка в WAV.
 # Огибающая (атака 5 мс + спад) убирает щелчки на границах семплов.
 
-func _tone(f_from: float, f_to: float, seconds: float, volume: float, wave := "sine") -> PackedFloat32Array:
+func _tone(f_from: float, f_to: float, seconds: float, volume: float,
+		wave := "sine") -> PackedFloat32Array:
 	var count := maxi(int(seconds * SAMPLE_RATE), 1)
 	var out := PackedFloat32Array()
 	out.resize(count)
@@ -205,25 +206,43 @@ func _midi(note: int) -> float:
 
 func _generate_library() -> void:
 	# Выстрелы башен.
-	_streams["beam"] = _make_wav(_tone(1500.0, 220.0, 0.12, 0.45))                       # снайпер: «зап»
-	_streams["lob_fire"] = _make_wav(_mix(_tone(160.0, 60.0, 0.15, 0.55), _noise(0.08, 0.22)))  # мортира: хлопок
-	_streams["frost_fire"] = _make_wav(_tone(1100.0, 1600.0, 0.08, 0.2))                 # криостан: «пшик»
-	_streams["flame_fire"] = _make_wav(_mix(_noise(0.10, 0.34), _tone(170.0, 70.0, 0.12, 0.28))) # огонь: короткий факел
+	# снайпер: «зап»
+	_streams["beam"] = _make_wav(_tone(1500.0, 220.0, 0.12, 0.45))
+	# мортира: хлопок
+	_streams["lob_fire"] = _make_wav(
+			_mix(_tone(160.0, 60.0, 0.15, 0.55), _noise(0.08, 0.22)))
+	# криостан: «пшик»
+	_streams["frost_fire"] = _make_wav(_tone(1100.0, 1600.0, 0.08, 0.2))
+	# огонь: короткий факел
+	_streams["flame_fire"] = _make_wav(
+			_mix(_noise(0.10, 0.34), _tone(170.0, 70.0, 0.12, 0.28)))
 	_streams["boom"] = _make_wav(_mix(_noise(0.4, 0.75), _tone(180.0, 40.0, 0.4, 0.6)))  # взрыв сплеша
-	_streams["frost"] = _make_wav(_mix(_tone(880.0, 860.0, 0.18, 0.25), _tone(1318.0, 1290.0, 0.22, 0.2)))  # ледяной звон
+	# ледяной звон
+	_streams["frost"] = _make_wav(
+			_mix(_tone(880.0, 860.0, 0.18, 0.25), _tone(1318.0, 1290.0, 0.22, 0.2)))
 
 	# Юниты.
 	_streams["spawn"] = _make_wav(_tone(260.0, 760.0, 0.14, 0.3, "square"))              # появление
-	_streams["unit_die"] = _make_wav(_mix(_tone(500.0, 90.0, 0.12, 0.45, "square"), _noise(0.06, 0.18)))
+	_streams["unit_die"] = _make_wav(
+			_mix(_tone(500.0, 90.0, 0.12, 0.45, "square"), _noise(0.06, 0.18)))
 
 	# База и постройка.
-	_streams["base_hit"] = _make_wav(_concat(_mix(_tone(660.0, 660.0, 0.18, 0.5, "square"), _noise(0.25, 0.35)), \
+	_streams["base_hit"] = _make_wav(_concat(
+			_mix(_tone(660.0, 660.0, 0.18, 0.5, "square"), _noise(0.25, 0.35)), \
 			_tone(470.0, 470.0, 0.2, 0.45, "square")))                                   # тревога: два тона
 	_streams["build"] = _make_wav(_mix(_noise(0.05, 0.35), _tone(240.0, 180.0, 0.1, 0.4)))
 
+	# Фазы раунда и отказы.
+	_streams["phase_plan"] = _make_wav(_seq_notes([67, 72], 0.10, 0.22, "sine"))     # «готовься»
+	_streams["phase_assault"] = _make_wav(_seq_notes([60, 67, 72], 0.09, 0.34, "square"))
+	_streams["deny"] = _make_wav(_seq_notes([52, 48], 0.06, 0.22, "square"))        # «нельзя»
+	_streams["ability"] = _make_wav(_seq_notes([72, 76, 79], 0.06, 0.26, "sine"))
+	_streams["repair"] = _make_wav(_seq_notes([64, 69, 72, 76], 0.07, 0.28, "sine"))
+
 	# UI и финал.
 	_streams["click"] = _make_wav(_tone(1000.0, 780.0, 0.04, 0.25))
-	_streams["victory"] = _make_wav(_seq_notes([72, 76, 79, 84], 0.14, 0.35, "square"))  # мажорная арпеджио вверх
+	# мажорное арпеджио вверх
+	_streams["victory"] = _make_wav(_seq_notes([72, 76, 79, 84], 0.14, 0.35, "square"))
 	_streams["defeat"] = _make_wav(_seq_notes([64, 60, 55], 0.3, 0.35, "sine"))          # нисходящая
 
 	_streams["bgm"] = _make_wav(_generate_bgm_samples(), true)

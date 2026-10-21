@@ -2,8 +2,12 @@ extends Node
 ## Автозагрузка «LoadoutManager»: выбор снаряжения (деки) и профильные
 ## настройки, сохранение в user://loadout.cfg.
 ##
-## В бою доступны ВСЕ типы башен/юнитов из GameDB, но игрок берёт с собой
-## только 3 башни (роль Защитника) и 3 юнита (роль Штурмовика). Деки
+## Игрок берёт с собой только 3 типа башен (роль Защитника) и 3 типа юнитов
+## (роль Штурмовика). В бою каждый тип можно поставить 2 раза
+## (GameDB.MAX_TOWERS_PER_TYPE), то есть дека из 3 башен = ровно 6 построек —
+## это и есть расчётный максимум обороны под бюджет раундов 220/100/100
+## (см. приложение H аудита). MAX_TOWERS_TOTAL = 8 остаётся страховкой на
+## случай будущих дек большего размера. Деки
 ## передаются в матч через лобби-RPC (NetworkManager._register ->
 ## _sync_players -> GameState.setup_match), поэтому сервер валидирует
 ## постройки/спавн строго по декам, а HUD строит кнопки только из дека.
@@ -12,13 +16,13 @@ extends Node
 ##   [loadout] towers=sniper,splash,frost  units=fast,tank,flying
 ##   [profile] role_pref=0 (0 — любая, 1 — защитник, 2 — штурмовик)
 
+enum RolePref { ANY, DEFENDER, ATTACKER }
+
 const SAVE_PATH := "user://loadout.cfg"
 const DECK_SIZE := 3
 
 const DEFAULT_TOWERS: Array[String] = ["sniper", "splash", "frost"]
 const DEFAULT_UNITS: Array[String] = ["fast", "tank", "flying"]
-
-enum RolePref { ANY, DEFENDER, ATTACKER }
 
 ## Выбранные деки (идентификаторы из GameDB).
 var towers: Array[String] = DEFAULT_TOWERS.duplicate()
@@ -78,6 +82,18 @@ func _sanitize(raw, table: String) -> Array[String]:
 
 
 # --------------------------------------------------------- Операции дек -----
+
+## Сколько всего построек позволит эта дека при лимите 2 на тип.
+func tower_capacity() -> int:
+	return mini(towers.size() * GameDB.MAX_TOWERS_PER_TYPE, GameDB.MAX_TOWERS_TOTAL)
+
+
+## Короткая подпись для меню/подсказок: «3 типа · до 6 построек».
+func towers_summary() -> String:
+	return "%d типа · до %d построек (по %d на тип)" % [
+		towers.size(), tower_capacity(), GameDB.MAX_TOWERS_PER_TYPE,
+	]
+
 
 ## Есть ли место в деке (для UI-плиток).
 func deck_full(which: String) -> bool:

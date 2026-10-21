@@ -1,16 +1,15 @@
-class_name WaveDisplay
+class_name PhaseDisplay
 extends Control
-## Компактный неоновый индикатор волны для верхней панели HUD.
+## Компактный индикатор фазы раунда для верхней панели HUD.
 ##
 ## Показывает:
-##   * во время волны  — «WAVE 3  —  44s» + тонкую полосу остатка времени;
-##   * в перерыве      — «NEXT WAVE 4  —  5s»;
-##   * последние 10 с   — акцент краснеет, таймер подсвечивается.
+##   * ПОДГОТОВКА — «РАУНД 2/3 · 1:1» + таймер до штурма (янтарный);
+##   * ШТУРМ      — таймер до конца раунда (cyan, последние 10 с — красный);
+##   * ИТОГ       — таймер до следующего раунда (янтарный).
 ##
-## СЕТЕВАЯ МОДЕЛЬ: узел самодостаточен. Сервер присылает только границы фаз
-## (GameState.wave_started / wave_ended), а между ними каждый пир считает
-## время локально. Поэтому индикатор можно вставить в любой HUD простым
-## добавлением узла с этим скриптом.
+## СЕТЕВАЯ МОДЕЛЬ: сервер присылает границы фаз (GameState.phase_changed),
+## между ними каждый пир считает время локально. Расхождение возможно только
+## на доли секунды и не влияет на геймплей: правила считает сервер.
 ##
 ## ПРАВИЛО ПРОЕКТА: никакого _draw. Вся графика — стандартные Label,
 ## ProgressBar, ColorRect и StyleBoxFlat.
@@ -18,20 +17,19 @@ extends Control
 const CYAN := Color(0.22, 0.95, 1.0)
 const AMBER := Color(1.0, 0.78, 0.34)
 const RED := Color(1.0, 0.30, 0.42)
+const GREEN := Color(0.35, 0.95, 0.55)
 const TEXT := Color(0.92, 0.97, 1.0)
 const MUTED := Color(0.55, 0.72, 0.82, 0.75)
 const WARNING_SECONDS := 10.0
 
 ## Фон-подложка нужна, только если индикатор используется отдельно.
-## В верхней панели Defender HUD она выключена — там уже есть общий panel.
 @export var show_background := false
 @export var background_color := Color(0.01, 0.03, 0.055, 0.78)
 
-var _wave := 1
-var _time_left := 60.0
-var _in_progress := true
-var _phase_total := 60.0
-var _last_in_progress := true
+var _round := 1
+var _phase := GameState.Phase.PLANNING
+var _time_left := 12.0
+var _phase_total := 12.0
 var _shown_second := -1
 var _finished := false
 
@@ -50,18 +48,18 @@ func _ready() -> void:
 
 	_build_visual()
 
-	GameState.wave_started.connect(_on_wave_started)
-	GameState.wave_ended.connect(_on_wave_ended)
+	GameState.phase_changed.connect(_on_phase_changed)
+	GameState.round_ended.connect(_on_round_ended)
 	GameState.game_ended.connect(_on_game_ended)
 	resized.connect(_update_pivot)
 	visibility_changed.connect(_update_pivot)
 
-	# Стартовое состояние читаем из GameState: так индикатор корректен даже
-	# если сигнал фазы успел пройти до его появления в дереве.
-	_wave = GameState.current_wave
-	_time_left = GameState.wave_time_left
-	_in_progress = GameState.wave_in_progress
-	_phase_total = maxf(GameState.WAVE_DURATION if _in_progress else GameState.WAVE_BREAK, 1.0)
+	# Стартовое состояние читаем из GameState: индикатор корректен, даже если
+	# сигнал фазы успел пройти до его появления в дереве.
+	_round = GameState.round_index
+	_phase = GameState.round_phase
+	_time_left = GameState.phase_time_left
+	_phase_total = _duration_of(_phase)
 	_update_display(true)
 	call_deferred("_update_pivot")
 
@@ -74,9 +72,9 @@ func _process(delta: float) -> void:
 	_time_left = maxf(_time_left - delta, 0.0)
 	_update_bar()
 
-	# Текст пересобираем только при смене целой секунды — меньше работы на кадр.
+	# Текст пересобираем только при смене целой секунды.
 	var seconds := ceili(_time_left)
-	if seconds != _shown_second or _in_progress != _last_in_progress:
+	if seconds != _shown_second:
 		_update_display()
 
 
@@ -100,7 +98,7 @@ func _build_visual() -> void:
 	add_child(pad)
 
 	var column := VBoxContainer.new()
-	column.add_theme_constant_override("separation", 4)
+	column.add_theme_constant_override("separation", 3)
 	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pad.add_child(column)
 
@@ -117,13 +115,20 @@ func _build_visual() -> void:
 	_accent.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_child(_accent)
 
-	_phase_label = _label("WAVE 1", 15, CYAN)
+	_phase_label = _label("РАУНД 1/3 · 0:0", 12, MUTED)
+	_phase_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(_phase_label)
 
-	_time_label = _label("— 60s", 17, TEXT)
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(spacer)
+
+	_time_label = _label("12s", 16, TEXT)
+	_time_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	row.add_child(_time_label)
 
-	# Полоса остатка времени: 4 px, без процентов и без мыши.
+	# Полоса остатка фазы: 4 px, без процентов и без мыши.
 	_bar = ProgressBar.new()
 	_bar.custom_minimum_size = Vector2(0.0, 4.0)
 	_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -163,22 +168,39 @@ func _style(bg: Color, border: Color, width: int, radius: int) -> StyleBoxFlat:
 
 # ----------------------------------------------------------- Логика фаз ------
 
-func _on_wave_started(wave: int, duration: float) -> void:
-	_wave = wave
+func _duration_of(phase: int) -> float:
+	match phase:
+		GameState.Phase.ASSAULT:
+			return GameState.ASSAULT_TIME
+		GameState.Phase.REVIEW:
+			return GameState.REVIEW_TIME
+		_:
+			return GameState.PLANNING_TIME
+
+
+func _phase_name(phase: int) -> String:
+	match phase:
+		GameState.Phase.ASSAULT:
+			return "ШТУРМ"
+		GameState.Phase.REVIEW:
+			return "ИТОГ"
+		_:
+			return "ПОДГОТОВКА"
+
+
+func _on_phase_changed(round_index: int, phase: int, duration: float) -> void:
+	_round = round_index
+	_phase = phase
 	_time_left = duration
-	_in_progress = true
 	_phase_total = maxf(duration, 1.0)
 	_update_display(true)
 	_punch()
 
 
-func _on_wave_ended(wave: int, break_duration: float) -> void:
-	_wave = wave
-	_time_left = break_duration
-	_in_progress = false
-	_phase_total = maxf(break_duration, 1.0)
+func _on_round_ended(_round_index: int, _attacker_won: bool,
+		_defender_wins: int, _attacker_wins: int) -> void:
+	# Счёт раундов показан в заголовке — обновляем сразу, не дожидаясь секунды.
 	_update_display(true)
-	_punch()
 
 
 func _on_game_ended(_defender_won: bool) -> void:
@@ -188,29 +210,26 @@ func _on_game_ended(_defender_won: bool) -> void:
 
 func _update_display(force := false) -> void:
 	var seconds := maxi(ceili(_time_left), 0)
-	if not force and seconds == _shown_second and _in_progress == _last_in_progress:
+	if not force and seconds == _shown_second:
 		return
 	_shown_second = seconds
-	_last_in_progress = _in_progress
 
-	if _in_progress:
-		var warning := _time_left <= WARNING_SECONDS
-		var tint := RED if warning else CYAN
-		_phase_label.text = "WAVE %d" % _wave
-		_phase_label.add_theme_color_override("font_color", tint)
-		_time_label.text = "— %ds" % seconds
-		_time_label.add_theme_color_override("font_color", RED if warning else TEXT)
-		_accent.color = tint
-		_bar_fill.bg_color = tint
-	else:
-		# В перерыве номер текущей волны уже завершён — показываем следующую.
-		_phase_label.text = "NEXT WAVE %d" % (_wave + 1)
-		_phase_label.add_theme_color_override("font_color", AMBER)
-		_time_label.text = "— %ds" % seconds
-		_time_label.add_theme_color_override("font_color", AMBER)
-		_accent.color = AMBER
-		_bar_fill.bg_color = AMBER
-
+	var tint := CYAN
+	match _phase:
+		GameState.Phase.ASSAULT:
+			tint = RED if _time_left <= WARNING_SECONDS else CYAN
+		GameState.Phase.REVIEW:
+			tint = GREEN
+		_:
+			tint = AMBER
+	_phase_label.text = "РАУНД %d/%d · %d:%d" % [
+		_round, GameState.MAX_ROUNDS, GameState.defender_wins, GameState.attacker_wins,
+	]
+	_phase_label.add_theme_color_override("font_color", Color(MUTED, 1.0))
+	_time_label.text = "%s %ds" % [_phase_name(_phase), seconds]
+	_time_label.add_theme_color_override("font_color", tint)
+	_accent.color = tint
+	_bar_fill.bg_color = tint
 	_update_bar()
 
 

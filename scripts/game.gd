@@ -1,21 +1,31 @@
 extends Node2D
 ## Корневая сцена матча: раздаёт роли, включает нужный HUD,
-## рисует дорогу/базу, ведёт таймер и показывает финальный экран.
+## рисует дорогу/базу, крутит фазы раунда и показывает финальный экран.
 ##
-## Условия победы:
-##   * HP базы упало до 0            -> победил ШТУРМОВИК;
-##   * время матча вышло, база цела  -> победил ЗАЩИТНИК.
+## ЭТАП 6 — ROUND-BASED SIEGE: матч = BO3 из раундов
+##   ПОДГОТОВКА (12 с) -> ШТУРМ (60 с) -> ИТОГ (8 с).
+## Раунд берёт Штурмовик, если снёс базу; иначе — Защитник.
+## Башни переживают раунды, HP базы (15) сбрасывается каждый раунд.
+## Таймера «10 минут» больше нет: длительность матча задают раунды.
 ##
-## ЭТАП 3: BGM на всю партию (AudioManager), на финале — джингл победы/
-## поражения и экран статистики end_game_screen.tscn (статистику считает
-## сервер в GameState.stats и рассылает в _end_match).
+## Здесь же создаются соло-режим «Тренировка» (BotController) и подсказки
+## первого матча (TrainingTips) — они работают только вне сети.
 
-const MATCH_TIME_LIMIT := 600.0   # сек; после этого Защитник побеждает
 const REFERENCE_VIEW_SIZE := Vector2(1152.0, 648.0)
 const END_SCREEN := preload("res://scenes/end_game_screen.tscn")
+const BOT_SCRIPT := preload("res://scripts/bot_controller.gd")
+const TIPS_SCRIPT := preload("res://scripts/training_tips.gd")
+## Сколько секунд «тишины» (нет денег, нет очереди, нет юнитов) терпим,
+## прежде чем завершить штурм досрочно. Иначе игрок смотрит в пустую дорогу.
+## 6 с, а не 2: при капельном доходе 1,5 кр/с штурмовику нужно до 10 с, чтобы
+## накопить на самого дешёвого юнита (15 кр). С прежними 2 с раунд
+## заканчивался в момент, когда игрок просто копил на следующую покупку.
+const STALL_GRACE := 6.0
 
 var my_role := NetworkManager.Role.NONE
-var _elapsed := 0.0
+var _stall_time := 0.0
+var _bot: Node = null
+var _tips: Node = null
 var _base_marker: Node2D
 var _ring_poly: Polygon2D   # маркер базы собран из стандартных Polygon2D
 var _disk_poly: Polygon2D
@@ -55,11 +65,21 @@ func _ready() -> void:
 	%AttackerHUD.visible = not is_defender
 
 	GameState.game_ended.connect(_on_game_ended)
+	GameState.phase_changed.connect(_on_phase_changed)
+	GameState.round_ended.connect(_on_round_ended)
 	NetworkManager.opponent_left.connect(_on_opponent_left)
 	AudioManager.play_music("bgm")
 	var pause_menu := preload("res://scripts/pause_menu.gd").new()
 	pause_menu.name = "PauseMenu"
 	add_child(pause_menu)
+	# Соло-режим: ИИ-соперник и подсказки живут только вне сетевой сессии.
+	if NetworkManager.is_solo():
+		_bot = BOT_SCRIPT.new()
+		_bot.name = "BotOpponent"
+		add_child(_bot)
+		_tips = TIPS_SCRIPT.new()
+		_tips.name = "TrainingTips"
+		add_child(_tips)
 
 
 func _fit_camera_to_viewport() -> void:
@@ -82,41 +102,62 @@ func _fit_camera_to_viewport() -> void:
 			playfield_center_y + (screen_center_y - safe_center_y) / fit)
 
 
+## Фазы раунда тикает ТОЛЬКО сервер; клиент получает готовые переходы
+## по RPC. Так расхождение таймеров не ломает планирование.
 func _process(delta: float) -> void:
 	if GameState.game_over or not multiplayer.is_server():
 		return
-	# Хост отсчитывает время матча: пока база цела по истечении лимита —
-	# Защитник победил.
-	_elapsed += delta
-	if _elapsed >= MATCH_TIME_LIMIT:
-		GameState.finish_match(true)
+	GameState.tick_phase(delta)
+	_tick_stall(delta)
+
+
+## Досрочный конец штурма: у атакующего нет ни денег, ни очереди, ни юнитов
+## на дороге. Без этого игрок 60 секунд смотрит в пустую арену.
+func _tick_stall(delta: float) -> void:
+	if not GameState.is_assault():
+		_stall_time = 0.0
 		return
-	_tick_wave(delta)
+	if not _assault_is_stalled():
+		_stall_time = 0.0
+		return
+	_stall_time += delta
+	if _stall_time >= STALL_GRACE:
+		_stall_time = 0.0
+		GameState.finish_round_by_timeout()
 
 
-## ЭТАП 4: тик системы волн (только сервер). Таймер волны и перерыва
-## уменьшается здесь; клиенты ведут собственный отсчёт по сигналам
-## wave_started / wave_ended, поэтому значения по сети не гоняются.
-func _tick_wave(delta: float) -> void:
-	if GameState.wave_in_progress:
-		GameState.wave_time_left = maxf(GameState.wave_time_left - delta, 0.0)
-		# Волна кончается по ЛЮБОМУ из двух условий:
-		#   а) время вышло;
-		#   б) штурмовик-банкрот и поле пусто — иначе игра зависла бы навечно.
-		if GameState.wave_time_left <= 0.0 or _wave_stalled():
-			GameState.end_current_wave()
-	elif GameState.intermission_left > 0.0:
-		GameState.intermission_left = maxf(GameState.intermission_left - delta, 0.0)
-		if GameState.intermission_left <= 0.0:
-			GameState.start_new_wave()
-
-
-## Волна «заглохла»: у штурмовика нет денег даже на самого дешёвого юнита
-## и на карте не осталось активных юнитов (группа "units").
-func _wave_stalled() -> bool:
-	if GameState.gold.get(GameState.attacker_peer, 0) >= GameDB.cheapest_unit_cost():
+func _assault_is_stalled() -> bool:
+	var spawner := get_node_or_null("Road/UnitSpawner") as UnitSpawner
+	if spawner != null and spawner.queue_size() > 0:
+		return false
+	# Если накоплений хватит на покупку внутри грейс-периода — не «заглох».
+	var gold := int(GameState.gold.get(GameState.attacker_peer, 0))
+	var income := GameState.TRICKLE_ATTACKER * STALL_GRACE
+	if gold + int(income) >= GameDB.cheapest_unit_cost():
 		return false
 	return get_tree().get_nodes_in_group("units").is_empty()
+
+
+## Фаза сменилась — короткий звук/баннер, чтобы игрок не пропустил старт.
+func _on_phase_changed(_round_index: int, phase: int, _duration: float) -> void:
+	match phase:
+		GameState.Phase.PLANNING:
+			AudioManager.play_sfx("phase_plan", -8.0)
+		GameState.Phase.ASSAULT:
+			AudioManager.play_sfx("phase_assault", -4.0)
+			# Баннер — authority-RPC: зовёт только сервер, иначе клиент
+			# получит «not authorized» и баннер не увидят оба.
+			if multiplayer.is_server():
+				FXManager.round_banner.rpc("ШТУРМ!", Color(1.0, 0.45, 0.35))
+
+
+func _on_round_ended(_round_index: int, attacker_won: bool,
+		_defender_wins: int, _attacker_wins: int) -> void:
+	if not multiplayer.is_server():
+		return
+	FXManager.round_banner.rpc("РАУНД ЗА ШТУРМОВИКОМ" if attacker_won
+			else "РАУНД ЗА ЗАЩИТНИКОМ",
+			Color(1.0, 0.45, 0.35) if attacker_won else Color(0.35, 0.95, 0.55))
 
 
 # ---------------------------------------------------------- Поле боя --------
@@ -251,7 +292,7 @@ func _spawn_base_marker() -> void:
 func _refresh_base_visual() -> void:
 	if _base_marker == null:
 		return
-	var hp_ratio := float(GameState.base_hp) / float(GameState.BASE_MAX_HP)
+	var hp_ratio := float(GameState.base_hp) / float(GameState.ROUND_BASE_HP)
 	var base_color := Color(0.9, 0.3, 0.25).lerp(Color(0.35, 0.9, 0.4), hp_ratio)
 	_disk_poly.color = base_color
 	_core_poly.color = Color.WHITE

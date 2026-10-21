@@ -28,9 +28,11 @@ static func theme() -> Theme:
 	result.set_color("font_color", "OptionButton", TEXT)
 	result.set_stylebox("normal", "Button", _button_style(PANEL, Color(CYAN, 0.25), 8))
 	result.set_stylebox("hover", "Button", _button_style(PANEL_HOVER, Color(CYAN, 0.88), 8))
-	result.set_stylebox("pressed", "Button", _button_style(Color(0.07, 0.11, 0.15), Color(AMBER, 0.92), 8))
+	result.set_stylebox("pressed", "Button",
+			_button_style(Color(0.07, 0.11, 0.15), Color(AMBER, 0.92), 8))
 	result.set_stylebox("focus", "Button", _button_style(PANEL_HOVER, CYAN, 8))
-	result.set_stylebox("disabled", "Button", _button_style(Color(0.025, 0.04, 0.055, 0.7), Color(1, 1, 1, 0.08), 8))
+	result.set_stylebox("disabled", "Button",
+			_button_style(Color(0.025, 0.04, 0.055, 0.7), Color(1, 1, 1, 0.08), 8))
 	result.set_stylebox("panel", "PanelContainer", _panel_style())
 	result.set_stylebox("normal", "LineEdit", _button_style(INK, Color(CYAN, 0.32), 6))
 	result.set_stylebox("focus", "LineEdit", _button_style(INK, CYAN, 6))

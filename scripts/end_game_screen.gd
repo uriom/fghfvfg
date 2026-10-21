@@ -31,8 +31,11 @@ func setup(defender_won: bool, stats: Dictionary, my_role: int) -> void:
 	title_label.text = "ПОБЕДА!" if i_won else "ПОРАЖЕНИЕ"
 	title_label.add_theme_color_override("font_color",
 			Color(0.55, 1.0, 0.55) if i_won else Color(1.0, 0.45, 0.45))
-	subtitle_label.text = "Победил Защитник — база выстояла до конца таймера" \
-			if defender_won else "Победил Штурмовик — база разрушена"
+	subtitle_label.text = "Победил Защитник — %d:%d по раундам" % [
+		GameState.defender_wins, GameState.attacker_wins,
+	] if defender_won else "Победил Штурмовик — %d:%d по раундам" % [
+		GameState.defender_wins, GameState.attacker_wins,
+	]
 	_fill_stats(stats)
 
 
@@ -44,12 +47,21 @@ func _fill_stats(stats: Dictionary) -> void:
 		stats_grid.remove_child(child)
 		child.queue_free()
 	_rows({
+		"Раунды": [
+			str(GameState.defender_wins), str(GameState.attacker_wins),
+		],
 		"Убито юнитов": [str(int(stats.get("units_killed", 0))), "—"],
 		"Построено башен": [str(int(stats.get("towers_built", 0))), "—"],
 		"Отправлено юнитов": ["—", str(int(stats.get("units_sent", 0)))],
-		"Отправлено волн": ["—", str(int(stats.get("waves_sent", 0)))],
+		"Формаций ×5": ["—", str(int(stats.get("waves_sent", 0)))],
 		"Прорвалось к базе": ["—", str(int(stats.get("units_leaked", 0)))],
-		"Потрачено золота": [
+		"Способности": [
+			"%d ремонт / %d оверклок" % [
+				int(stats.get("repairs_used", 0)), int(stats.get("overclocks_used", 0)),
+			],
+			"%d прорыв" % int(stats.get("breakthroughs_used", 0)),
+		],
+		"Потрачено кредитов": [
 			str(int(stats.get("gold_spent_defender", 0))),
 			str(int(stats.get("gold_spent_attacker", 0))),
 		],

@@ -2,7 +2,7 @@ extends Control
 ## HUD Штурмовика: статус в верхней полосе, выбор юнитов — в нижней.
 ## Центр экрана остаётся свободен для дороги, башен и тактического поля.
 
-const WAVE_DISPLAY_SCRIPT := preload("res://scripts/wave_display.gd")
+const PHASE_DISPLAY_SCRIPT := preload("res://scripts/phase_display.gd")
 const BAR_HEIGHT := 64.0
 const DOCK_HEIGHT := 150.0
 const DOCK_MAX_WIDTH := 820.0
@@ -14,7 +14,10 @@ const MUTED := Color(0.58, 0.69, 0.79)
 const PANEL_BG := Color(0.012, 0.028, 0.048, 0.94)
 
 var _unit_spawner: UnitSpawner
-var _wave_display: WaveDisplay
+var _phase_display: PhaseDisplay
+var _queue_label: Label
+var _break_button: Button
+var _cards_by_unit: Dictionary = {}
 var _gold_label: Label
 var _hp_label: Label
 var _hp_bar: ProgressBar
@@ -35,6 +38,8 @@ func _ready() -> void:
 	GameState.base_hp_changed.connect(_on_base_hp_changed)
 	_refresh_status()
 	rebuild_from_deck()
+	GameState.phase_changed.connect(_on_phase_changed)
+	_refresh_card_states()
 
 
 func _build_status_bar() -> void:
@@ -49,7 +54,7 @@ func _build_status_bar() -> void:
 	bar.offset_top = 0.0
 	bar.offset_right = 0.0
 	bar.offset_bottom = BAR_HEIGHT
-	bar.add_theme_stylebox_override("panel", _panel_style(PANEL_BG, Color(CYAN, 0.32), 10))
+	bar.add_theme_stylebox_override("panel", HudKit.panel_style(PANEL_BG, Color(CYAN, 0.32), 1, 10))
 	add_child(bar)
 
 	var margin := MarginContainer.new()
@@ -73,12 +78,12 @@ func _build_status_bar() -> void:
 	row.add_child(brand)
 	brand.add_child(_label("TOWER DUEL", 18, CYAN, 3))
 	brand.add_child(_label("ATTACKER // ASSAULT", 9, MUTED, 1))
-	row.add_child(_vertical_line(30.0))
+	row.add_child(HudKit.vertical_line(30.0))
 
-	_wave_display = WAVE_DISPLAY_SCRIPT.new() as WaveDisplay
-	_wave_display.custom_minimum_size = Vector2(270.0, 42.0)
-	_wave_display.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	row.add_child(_wave_display)
+	_phase_display = PHASE_DISPLAY_SCRIPT.new() as PhaseDisplay
+	_phase_display.custom_minimum_size = Vector2(250.0, 42.0)
+	_phase_display.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(_phase_display)
 
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -89,7 +94,8 @@ func _build_status_bar() -> void:
 	gold_panel.custom_minimum_size = Vector2(150.0, 34.0)
 	gold_panel.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	gold_panel.add_theme_stylebox_override(
-		"panel", _panel_style(Color(0.07, 0.05, 0.02, 0.78), Color(AMBER, 0.34), 7)
+		"panel", HudKit.panel_style(Color(0.07, 0.05, 0.02, 0.78),
+				Color(AMBER, 0.34), 1, 7)
 	)
 	row.add_child(gold_panel)
 	var gold_margin := MarginContainer.new()
@@ -100,20 +106,22 @@ func _build_status_bar() -> void:
 	_gold_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	gold_margin.add_child(_gold_label)
 
-	row.add_child(_vertical_line(30.0))
+	row.add_child(HudKit.vertical_line(30.0))
 	var base_box := VBoxContainer.new()
 	base_box.custom_minimum_size.x = 210.0
 	base_box.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	base_box.add_theme_constant_override("separation", 3)
 	base_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_child(base_box)
-	_hp_label = _label("ВРАЖЕСКАЯ БАЗА  ·  20 / 20", 10, TEXT, 1)
+	_hp_label = _label(
+		"ВРАЖЕСКАЯ БАЗА  ·  %d / %d" % [GameState.base_hp, GameState.ROUND_BASE_HP], 10, TEXT, 1
+	)
 	base_box.add_child(_hp_label)
 	_hp_bar = ProgressBar.new()
 	_hp_bar.custom_minimum_size = Vector2(0.0, 7.0)
 	_hp_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_hp_bar.show_percentage = false
-	_hp_bar.max_value = GameState.BASE_MAX_HP
+	_hp_bar.max_value = GameState.ROUND_BASE_HP
 	_hp_bar.value = GameState.base_hp
 	_hp_bar.add_theme_stylebox_override("background", _meter_style(Color(0.045, 0.06, 0.08)))
 	_hp_bar.add_theme_stylebox_override("fill", _meter_style(RED))
@@ -132,7 +140,8 @@ func _build_unit_dock() -> void:
 	_unit_dock.offset_right = 410.0
 	_unit_dock.offset_top = -DOCK_HEIGHT - 10.0
 	_unit_dock.offset_bottom = -10.0
-	_unit_dock.add_theme_stylebox_override("panel", _panel_style(PANEL_BG, Color(CYAN, 0.28), 10))
+	_unit_dock.add_theme_stylebox_override("panel",
+			HudKit.panel_style(PANEL_BG, Color(CYAN, 0.28), 1, 10))
 	add_child(_unit_dock)
 
 	var margin := MarginContainer.new()
@@ -157,7 +166,20 @@ func _build_unit_dock() -> void:
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	header.add_child(spacer)
-	header.add_child(_label("ОДИН ЮНИТ  /  ВОЛНА ×5", 9, MUTED, 1))
+	_queue_label = _label("ОЧЕРЕДЬ 0 / %d" % UnitSpawner.MAX_QUEUE, 9, MUTED, 1)
+	header.add_child(_queue_label)
+
+	# «ПРОРЫВ» — разовый залп всей очередью (способность Штурмовика).
+	_break_button = Button.new()
+	_break_button.text = "ПРОРЫВ"
+	_break_button.tooltip_text = ("Мгновенно выпустить всю очередь. "
+			+ "Один раз за раунд — лучший способ пробить плотную оборону.")
+	_break_button.focus_mode = Control.FOCUS_NONE
+	_break_button.custom_minimum_size = Vector2(84.0, 22.0)
+	_break_button.add_theme_font_size_override("font_size", 10)
+	_break_button.add_theme_color_override("font_color", RED)
+	_break_button.pressed.connect(_on_breakthrough_pressed)
+	header.add_child(_break_button)
 
 	var rule := ColorRect.new()
 	rule.custom_minimum_size.y = 1.0
@@ -189,13 +211,16 @@ func rebuild_from_deck() -> void:
 	for child in _unit_cards.get_children():
 		_unit_cards.remove_child(child)
 		child.queue_free()
+	_cards_by_unit.clear()
 	if _unit_spawner == null:
 		_unit_spawner = get_node_or_null("%UnitSpawner") as UnitSpawner
 
 	for unit_id in GameState.attacker_units:
 		if not GameDB.UNITS.has(unit_id):
 			continue
-		_unit_cards.add_child(_create_unit_card(String(unit_id), GameDB.UNITS[unit_id]))
+		var card := _create_unit_card(String(unit_id), GameDB.UNITS[unit_id])
+		_unit_cards.add_child(card)
+		_cards_by_unit[String(unit_id)] = card
 
 
 func _create_unit_card(unit_id: String, stats: Dictionary) -> Control:
@@ -205,7 +230,8 @@ func _create_unit_card(unit_id: String, stats: Dictionary) -> Control:
 	card.size_flags_horizontal = Control.SIZE_FILL
 	card.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	card.add_theme_stylebox_override(
-		"panel", _panel_style(Color(0.035, 0.070, 0.098, 0.96), Color(CYAN, 0.23), 7)
+		"panel", HudKit.panel_style(Color(0.035, 0.070, 0.098, 0.96),
+				Color(CYAN, 0.23), 1, 7)
 	)
 
 	var margin := MarginContainer.new()
@@ -254,7 +280,7 @@ func _create_unit_card(unit_id: String, stats: Dictionary) -> Control:
 	details.clip_text = true
 	labels.add_child(details)
 	card.tooltip_text = (
-		"%s — %d золота\nHP: %d · Урон базе: %d%s"
+		"%s — %d кр.\nHP: %d · Урон базе: %d%s"
 		% [
 			String(stats["name"]),
 			int(stats["cost"]),
@@ -282,6 +308,10 @@ func _create_unit_card(unit_id: String, stats: Dictionary) -> Control:
 	send_wave.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	send_wave.pressed.connect(_on_send_wave.bind(unit_id))
 	buttons.add_child(send_wave)
+	card.set_meta("unit_id", unit_id)
+	card.set_meta("send_one", send_one)
+	card.set_meta("send_wave", send_wave)
+	card.set_meta("title", title)
 	return card
 
 
@@ -317,26 +347,6 @@ func _label(text: String, font_size: int, color: Color, outline_size: int) -> La
 	return label
 
 
-func _vertical_line(height: float) -> ColorRect:
-	var line := ColorRect.new()
-	line.custom_minimum_size = Vector2(1.0, height)
-	line.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	line.color = Color(1.0, 1.0, 1.0, 0.12)
-	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	return line
-
-
-func _panel_style(fill: Color, outline: Color, radius: int) -> StyleBoxFlat:
-	var style := StyleBoxFlat.new()
-	style.bg_color = fill
-	style.border_color = outline
-	style.set_border_width_all(1)
-	style.set_corner_radius_all(radius)
-	style.shadow_color = Color(0.0, 0.0, 0.0, 0.28)
-	style.shadow_size = 8
-	return style
-
-
 func _meter_style(fill: Color) -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
 	style.bg_color = fill
@@ -344,18 +354,102 @@ func _meter_style(fill: Color) -> StyleBoxFlat:
 	return style
 
 
+## Покупка одного юнита. Деньги списывает СЕРВЕР (в спавнере), а HUD
+## заранее гасит кнопку, чтобы клик не уходил в пустоту.
 func _on_send_one(unit_id: String) -> void:
 	if _unit_spawner == null:
 		return
+	if not _can_afford(unit_id, 1):
+		_deny()
+		return
 	AudioManager.play_sfx("click", -7.0, 1.2)
-	_unit_spawner.request_unit.rpc_id(1, unit_id)
+	_unit_spawner.enqueue_unit(unit_id, 1)
 
 
+## Покупка формации ×N: очередь получает сразу N юнитов.
 func _on_send_wave(unit_id: String) -> void:
 	if _unit_spawner == null:
 		return
+	var size := _unit_spawner.wave_size
+	if not _can_afford(unit_id, size):
+		_deny()
+		return
 	AudioManager.play_sfx("click", -4.0, 0.82)
-	_unit_spawner.request_wave.rpc_id(1, unit_id)
+	_unit_spawner.enqueue_unit(unit_id, size)
+
+
+func _deny() -> void:
+	AudioManager.play_sfx("deny", -6.0)
+
+
+## Хватает ли кредитов на count юнитов и не переполнена ли очередь.
+func _can_afford(unit_id: String, count: int) -> bool:
+	if _unit_spawner == null or GameState.game_over:
+		return false
+	if _unit_spawner.queue_size() + count > UnitSpawner.MAX_QUEUE:
+		return false
+	var cost := int(GameDB.UNITS[unit_id]["cost"]) * count
+	return int(GameState.gold.get(multiplayer.get_unique_id(), 0)) >= cost
+
+
+## Пересчёт доступности карточек. Вызывается по изменению золота/очереди и
+## раз в кадр — недорого (5 карточек), зато кнопки всегда честные.
+func _refresh_card_states() -> void:
+	if _cards_by_unit.is_empty():
+		return
+	var gold := int(GameState.gold.get(multiplayer.get_unique_id(), 0))
+	var queue := _unit_spawner.queue_size() if _unit_spawner != null else 0
+	for unit_id in _cards_by_unit:
+		var card: PanelContainer = _cards_by_unit[unit_id]
+		if not is_instance_valid(card):
+			continue
+		var cost := int(GameDB.UNITS[unit_id]["cost"])
+		var size := _unit_spawner.wave_size if _unit_spawner != null else 5
+		var one_ok := gold >= cost and queue + 1 <= UnitSpawner.MAX_QUEUE
+		var wave_ok := gold >= cost * size and queue + size <= UnitSpawner.MAX_QUEUE
+		(card.get_meta("send_one") as Button).disabled = not one_ok
+		(card.get_meta("send_wave") as Button).disabled = not wave_ok
+		card.modulate = Color.WHITE if one_ok else Color(0.62, 0.66, 0.72)
+	if _queue_label != null:
+		_queue_label.text = "ОЧЕРЕДЬ %d / %d" % [queue, UnitSpawner.MAX_QUEUE]
+		_queue_label.add_theme_color_override("font_color",
+				Color(CYAN) if queue > 0 else MUTED)
+	_refresh_breakthrough()
+
+
+func _process(_delta: float) -> void:
+	_refresh_card_states()
+
+
+func _on_phase_changed(_round_index: int, _phase: int, _duration: float) -> void:
+	_refresh_card_states()
+
+
+## «ПРОРЫВ»: сервер проверит фазу и «один раз за раунд».
+func _on_breakthrough_pressed() -> void:
+	if GameState.game_over or not GameState.is_assault():
+		_deny()
+		return
+	AudioManager.play_sfx("ability", -4.0, 0.85)
+	if multiplayer.is_server():
+		GameState.apply_ability(multiplayer.get_unique_id(), "breakthrough")
+	else:
+		GameState.request_ability.rpc_id(1, "breakthrough")
+
+
+func _refresh_breakthrough() -> void:
+	if _break_button == null:
+		return
+	var used: Array = GameState.abilities_used.get(multiplayer.get_unique_id(), [])
+	var queue := _unit_spawner.queue_size() if _unit_spawner != null else 0
+	var ready := not used.has("breakthrough") and GameState.is_assault() \
+			and queue > 0 and not GameState.game_over
+	_break_button.disabled = not ready
+	_break_button.modulate = Color.WHITE if ready else Color(0.55, 0.6, 0.66)
+	if ready:
+		_break_button.text = "ПРОРЫВ ×%d" % queue
+	else:
+		_break_button.text = "ПРОРЫВ"
 
 
 func _refresh_status() -> void:
@@ -365,7 +459,7 @@ func _refresh_status() -> void:
 	if _gold_label != null:
 		_gold_label.text = "КРЕДИТЫ  ·  %d" % amount
 	if _hp_label != null:
-		_on_base_hp_changed(GameState.base_hp, GameState.BASE_MAX_HP)
+		_on_base_hp_changed(GameState.base_hp, GameState.ROUND_BASE_HP)
 
 
 func _on_gold_changed(peer_id: int, amount: int) -> void:
@@ -374,6 +468,7 @@ func _on_gold_changed(peer_id: int, amount: int) -> void:
 	var delta := 0 if _last_gold < 0 else amount - _last_gold
 	_last_gold = amount
 	_gold_label.text = "КРЕДИТЫ  ·  %d" % amount
+	_refresh_card_states()
 	if delta != 0:
 		_punch(
 			_gold_label,

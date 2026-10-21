@@ -3,11 +3,15 @@ extends Node
 ##   godot --headless --path <проект> res://tools/smoke_test.tscn -- host
 ##   godot --headless --path <проект> res://tools/smoke_test.tscn -- join
 ##
-## Проверяет: подключение, старт матча, постройку башни, заказ юнитов и волны,
-## отказы по золоту, репликацию спавна, убийство башней и прорыв базы.
+## Проверяет: подключение, старт матча, фазу ПОДГОТОВКИ, постройку башни,
+## очередь юнитов, отказ по золоту, переход в ШТУРМ, репликацию спавна,
+## убийство башней, прорыв базы и смену раунда (BO3).
 
 const GAME_SCENE := "res://scenes/game.tscn"
-const DEADLINE_MS := 15000
+const DEADLINE_MS := 12000
+## Страж всего теста: 12 с подготовки не ждём — фазы прокручиваем вручную
+## через GameState.tick_phase(), поэтому тест укладывается в минуту.
+const GUARD_SECONDS := 60.0
 
 var role := "host"
 var _fail := false
@@ -32,7 +36,7 @@ func _swap_and_run(dummy: Node) -> void:
 
 func _run() -> void:
 	# Страж: если тест завис — падаем по таймауту с кодом 2.
-	get_tree().create_timer(45.0).timeout.connect(func() -> void:
+	get_tree().create_timer(GUARD_SECONDS).timeout.connect(func() -> void:
 		print("[%s] GUARD TIMEOUT" % role)
 		get_tree().quit(2))
 	if role == "host":
@@ -54,32 +58,54 @@ func _run_host() -> void:
 	NetworkManager.start_match()
 	await _wait_game_scene()
 	await _sleep(0.5)
-	# ЭТАП 5: дек через лобби-RPC долетел до матча (серверная валидация
-	# и HUD строятся из GameState.defender_towers).
+	# Дек через лобби-RPC долетел до матча (серверная валидация и HUD
+	# строятся из GameState.defender_towers).
 	_check(GameState.defender_towers.size() == LoadoutManager.DECK_SIZE,
 			"дек защитника в матче: %s" % ", ".join(GameState.defender_towers))
 
-	# 1. Ждём юнитов от штурмовика-клиента ПЕРЕД постройкой башни:
-	#    снайпер-луч убивает «бегунов» на подходе, и ждать 6 живых после
-	#    постройки уже нельзя.
-	await _wait(func() -> bool: return _unit_count() >= 6,
-			func() -> String: return "6 юнитов заспавнились на сервере (получено %d)" % _unit_count())
-
-	# 2. Защитник (хост) строит башню у дороги.
 	var map: GameMap = get_tree().current_scene.get_node("Map")
+	var defender := GameState.defender_peer
+
+	# 1. Стартовая фаза — ПОДГОТОВКА, бюджет раунда 1 выдан защитнику.
+	_check(GameState.round_phase == GameState.Phase.PLANNING,
+			"матч стартует в ПОДГОТОВКЕ")
+	_check(GameState.gold[defender] == GameState.ROUND_BUDGET_DEFENDER[0],
+			"бюджет защитника = %d" % GameState.gold[defender])
+
+	# 2. Строительство в ПОДГОТОВКЕ. Ставим снайпера у дороги.
 	var cell := _cell_near_road(map)
 	map._request_build(cell)
-	await _sleep(0.5)
+	await _sleep(0.4)
 	_check(map.occupied.has(cell), "башня построена в %s" % cell)
-	var gold_after_tower := GameState.START_GOLD + GameState.WAVE_STIPEND - 50
-	_check(GameState.gold[GameState.defender_peer] == gold_after_tower,
-			"золото защитника после постройки = %d" % GameState.gold[GameState.defender_peer])
+	var sniper_cost: int = int(GameDB.TOWERS[GameState.defender_towers[0]]["cost"])
+	var gold_after_tower: int = GameState.ROUND_BUDGET_DEFENDER[0] - sniper_cost
+	_check(GameState.gold[defender] == gold_after_tower,
+			"кредиты защитника после постройки = %d" % GameState.gold[defender])
+	_check(GameState.stats["towers_built"] == 1, "статистика: 1 башня")
 
-	# 3. Даём клиенту завершить денежные проверки без наших телепортов.
-	await _sleep(3.0)
+	# 3. Лимит на тип: вторая башня разрешена, третья — нет.
+	var cell2 := _cell_near_road(map, cell)
+	var before_second := GameState.gold[defender]
+	map._request_build(cell2)
+	await _sleep(0.3)
+	_check(map.total_towers() == 2, "вторая башня того же типа разрешена")
+	await _sleep(0.2)
+	_check(GameState.gold[defender] < before_second or before_second < sniper_cost,
+			"списание за вторую башню прошло")
 
-	# 4. Проверка боя: жертву замираем у башни, остальных отправляем к базе —
-	#    они быстро прорвутся и освободят дорогу: башня добьёт жертву.
+	# 4. Штурм: прокручиваем подготовку серверным тиком (без ожидания 12 с).
+	GameState.tick_phase(GameState.PLANNING_TIME + 0.1)
+	await _sleep(0.3)
+	_check(GameState.is_assault(), "фаза ШТУРМ началась")
+	_check(GameState.gold[GameState.attacker_peer] > 0,
+			"у штурмовика есть кредиты на старте штурма")
+
+	# 5. Очередь клиента выкладывается на дорогу.
+	await _wait(func() -> bool: return _unit_count() >= 4,
+			func() -> String: return "юниты из очереди заспавнились (%d)" % _unit_count())
+
+	# 6. Проверка боя: жертву замираем у башни, остальных отправляем к базе —
+	#    они прорываются и освобождают дорогу, башня добивает жертву.
 	var units := get_tree().get_nodes_in_group("units")
 	var victim: Unit = units[0]
 	victim.set_process(false)
@@ -88,30 +114,23 @@ func _run_host() -> void:
 	for i in range(1, units.size()):
 		(units[i] as Unit).progress = road_len - 5.0
 
-	await _wait(func() -> bool: return GameState.base_hp < GameState.BASE_MAX_HP,
+	await _wait(func() -> bool: return GameState.base_hp < GameState.ROUND_BASE_HP,
 			func() -> String: return "прорыв: HP базы = %d" % GameState.base_hp)
-	# Убийство жертвы проверяем по награде (захват узла в лямбду даёт шум
-	# «capture freed» — узел к этому моменту уже мёртв, что и есть успех).
-	await _wait(func() -> bool: return GameState.gold[GameState.defender_peer] > gold_after_tower,
-			func() -> String: return "защитник получил награду за убийство: %d" % GameState.gold[GameState.defender_peer])
+	await _wait(func() -> bool: return GameState.gold[defender] > gold_after_tower,
+			func() -> String: return "награда за убийство: %d" % GameState.gold[defender])
+	_check(GameState.stats["units_leaked"] >= 1, "статистика: прорывы учтены")
 
-	# 5. ЭТАП 4: проверка системы волн — устраиваем экономический «затык»:
-	#    все живые юниты уходят в прорыв, казну штурмовика сливаем ниже цены
-	#    самого дешёвого юнита. Волна обязана завершиться, а после перерыва
-	#    начаться снова (волна 2) с капиталом обоим игрокам.
-	for node in get_tree().get_nodes_in_group("units"):
-		var leftover := node as Unit
-		leftover.set_process(true)   # разморозить «жертву» боя — замороженный
-		# юнит не дойдёт до базы, застрянет в группе "units" и заблокирует
-		# условие «поле пусто» навсегда.
-		leftover.progress = (leftover.get_parent() as Path2D).curve.get_baked_length() - 5.0
-	await _sleep(1.0)   # дать прорывам (и баунти) обработаться на обоих пирах
-	var drained_gold := GameDB.cheapest_unit_cost() - 10
-	GameState._set_gold.rpc(GameState.attacker_peer, drained_gold)   # тестовая заливка казны
-	await _wait(func() -> bool: return GameState.current_wave == 2 and GameState.wave_in_progress,
-			func() -> String: return "волна 2 началась после затыка (текущая %d)" % GameState.current_wave)
-	_check(GameState.gold[GameState.attacker_peer] == GameState.WAVE_STIPEND + drained_gold,
-			"капитал волны 2 у штурмовика: %d" % GameState.gold[GameState.attacker_peer])
+	# 7. Конец раунда вручную: Защитник выстоял -> счёт 1:0, затем раунд 2.
+	GameState.finish_round_by_timeout()
+	await _sleep(0.3)
+	_check(GameState.defender_wins == 1, "раунд 1 за защитником")
+	_check(GameState.round_phase == GameState.Phase.REVIEW, "фаза ИТОГ")
+	GameState.tick_phase(GameState.REVIEW_TIME + 0.1)
+	await _sleep(0.4)
+	_check(GameState.round_index == 2, "начался раунд 2")
+	_check(GameState.base_hp == GameState.ROUND_BASE_HP, "HP базы сброшено")
+	_check(GameState.gold[defender] >= GameState.ROUND_BUDGET_DEFENDER[1],
+			"защитнику выдан бюджет раунда 2")
 
 
 # ---------------------------------------------------------------- КЛИЕНТ ----
@@ -123,9 +142,7 @@ func _run_join() -> void:
 	var spawner: UnitSpawner = get_tree().current_scene.get_node("Road/UnitSpawner")
 	var my_id := multiplayer.get_unique_id()
 
-	# ЭТАП 5: round-trip снаряжения — сохранить, загрузить, сравнить деки.
-	# Дек матча уже зафиксирован в _register (дефолтный), поэтому локальные
-	# переключения на результат матча не влияют — восстанавливаем сразу.
+	# Round-trip снаряжения: сохранить, загрузить, сравнить деки.
 	LoadoutManager.toggle_in_deck("units", "fast")
 	LoadoutManager.toggle_in_deck("units", "boss")
 	LoadoutManager.save_to_disk()
@@ -142,59 +159,54 @@ func _run_join() -> void:
 			and GameState.attacker_units.has("fast"),
 			"дек штурмовика в матче: %s" % ", ".join(GameState.attacker_units))
 
-	# 1. ЭТАП 4: волна 1 идёт с первого кадра, капитал начислен обоим.
-	_check(GameState.current_wave == 1 and GameState.wave_in_progress,
-			"волна 1 идёт на клиенте (текущая %d)" % GameState.current_wave)
-	var start_gold := GameState.START_GOLD + GameState.WAVE_STIPEND
+	# 1. Фаза и бюджет: ПОДГОТОВКА, 170 кредитов в раунде 1.
+	_check(GameState.round_phase == GameState.Phase.PLANNING,
+			"клиент видит ПОДГОТОВКУ")
+	var start_gold := GameState.ROUND_BUDGET_ATTACKER[0]
 	_check(GameState.gold[my_id] == start_gold,
-			"стартовый капитал с волной = %d" % GameState.gold[my_id])
+			"стартовый бюджет штурмовика = %d" % GameState.gold[my_id])
 
-	# 2. Негатив: волна танков (225) дороже капитала (220) — отклонена.
-	spawner.request_wave.rpc_id(1, "tank")
-	await _sleep(0.5)
-	_check(GameState.gold[my_id] == start_gold,
-			"дорогая волна отклонена, золото = %d" % GameState.gold[my_id])
+	# 2. Негатив: босс дороже остатка после первой покупки.
+	spawner.enqueue_unit("boss", 1)
+	await _sleep(0.4)
+	_check(GameState.gold[my_id] == start_gold - int(GameDB.UNITS["boss"]["cost"]),
+			"босс куплен за %d" % int(GameDB.UNITS["boss"]["cost"]))
+	spawner.enqueue_unit("boss", 1)
+	await _sleep(0.4)
+	_check(GameState.gold[my_id] == start_gold - int(GameDB.UNITS["boss"]["cost"]),
+			"второй босс отклонён (нет кредитов), остаток = %d" % GameState.gold[my_id])
 
-	# 2. Ровно шесть одиночных «бегунов»; интервал больше серверного кулдауна.
-	for i in 6:
-		spawner.request_unit.rpc_id(1, "fast")
-		await _sleep(0.6)   # кулдаун сервера 400 мс, даём запас
+	# 3. Очередь: пять дешёвых «бегунов» докупаем остатком.
+	var fast_cost: int = int(GameDB.UNITS["fast"]["cost"])
+	var left_over: int = GameState.gold[my_id]
+	var affordable := mini(4, left_over / fast_cost)
+	for i in affordable:
+		spawner.enqueue_unit("fast", 1)
+		await _sleep(0.25)
+	_check(GameState.gold[my_id] == left_over - affordable * fast_cost,
+			"очередь оплачена, остаток = %d" % GameState.gold[my_id])
+	_check(spawner.queue_size() >= 1, "очередь не пуста: %d" % spawner.queue_size())
 
-	# Видимость спавна: с ежесекундной диагностикой (ловим плавающую репликацию).
-	var waited := 0.0
-	var last_diag := -1
-	while _unit_count() < 6 and waited < 10.0:
-		var sec := int(waited)
-		if sec != last_diag:
-			last_diag = sec
-			var road := get_tree().current_scene.get_node("Road") as Path2D
-			print("[join] diag t=%d units_group=%d road_children=%d" % [sec, _unit_count(), road.get_child_count()])
-		await get_tree().process_frame
-		waited += get_process_delta_time()
-	_check(_unit_count() >= 6, "6 юнитов видны у клиента (получено %d)" % _unit_count())
-	await _wait(func() -> bool: return GameState.gold[my_id] == start_gold - 6 * 15,
-			func() -> String: return "за 6 юнитов списано золото, остаток = %d" % GameState.gold[my_id])
+	# 4. Хост открывает штурм — очередь начинает выкладываться.
+	await _wait(func() -> bool: return GameState.is_assault(),
+			func() -> String: return "клиент увидел ШТУРМ")
+	await _wait(func() -> bool: return _unit_count() >= 3,
+			func() -> String: return "юниты из очереди видны клиенту (%d)" % _unit_count())
 
-	# 3. Синхронизация состояния: прорыв на хосте доходит сюда.
-	await _wait(func() -> bool: return GameState.base_hp < GameState.BASE_MAX_HP,
+	# 5. Синхронизация состояния: прорыв на хосте доходит сюда + бонус.
+	await _wait(func() -> bool: return GameState.base_hp < GameState.ROUND_BASE_HP,
 			func() -> String: return "клиент увидел HP базы = %d" % GameState.base_hp)
-	await _wait(func() -> bool: return GameState.gold[my_id] > start_gold - 6 * 15,
-			func() -> String: return "бони за прорыв пришла клиенту: %d" % GameState.gold[my_id])
+	await _wait(func() -> bool: return GameState.stats["units_leaked"] >= 1,
+			func() -> String: return "клиент увидел прорыв в статистике")
 
-	# 4. Не отключаемся, пока хост не завершит боевую проверку: золото
-	#    защитника синхронизировано обоим, ждём его роста (+8 за убийство).
-	var defender_gold_after_kill := GameState.START_GOLD + GameState.WAVE_STIPEND - 50 + 8
-	await _wait(func() -> bool: return GameState.gold[GameState.defender_peer] > defender_gold_after_kill - 1,
-			func() -> String: return "клиент увидел награду защитника: %d" % GameState.gold[GameState.defender_peer])
-
-	# 5. ЭТАП 4: хост устраивает «затык» — ждём волну 2 с капиталом обоим.
-	await _wait(func() -> bool: return GameState.current_wave == 2 and GameState.wave_in_progress,
-			func() -> String: return "клиент увидел волну 2 (текущая %d)" % GameState.current_wave)
-	await _wait(func() -> bool: return GameState.gold[my_id] == GameState.WAVE_STIPEND + GameDB.cheapest_unit_cost() - 10,
-			func() -> String: return "капитал волны 2 у штурмовика: %d" % GameState.gold[my_id])
-	await _wait(func() -> bool: return GameState.gold[GameState.defender_peer] == defender_gold_after_kill + GameState.WAVE_STIPEND,
-			func() -> String: return "капитал волны 2 у защитника: %d" % GameState.gold[GameState.defender_peer])
-	await _sleep(1.5)   # граце-пауза: хост успевает допечатать финал до дисконнекта
+	# 6. Конец раунда и старт раунда 2 реплицируются.
+	await _wait(func() -> bool: return GameState.round_index == 2,
+			func() -> String: return "клиент увидел раунд 2 (текущий %d)" % GameState.round_index)
+	await _wait(func() -> bool: return GameState.round_phase == GameState.Phase.PLANNING,
+			func() -> String: return "клиент видит ПОДГОТОВКУ раунда 2")
+	await _wait(func() -> bool: return GameState.gold[my_id] >= GameState.ROUND_BUDGET_ATTACKER[1],
+			func() -> String: return "бюджет раунда 2 у штурмовика: %d" % GameState.gold[my_id])
+	await _sleep(1.0)   # граце-пауза: хост успевает допечатать финал до дисконнекта
 
 
 # ------------------------------------------------------------- Помощники ----
@@ -234,14 +246,14 @@ func _wait_game_scene() -> void:
 		func() -> String: return "сцена матча загружена")
 
 
-func _cell_near_road(map: GameMap) -> Vector2i:
+func _cell_near_road(map: GameMap, exclude := Vector2i(-1, -1)) -> Vector2i:
 	# Строим в клетке рядом с дорогой, чтобы башня доставала юнитов.
 	var best := Vector2i(-1, -1)
 	var best_dist := INF
 	for x in range(0, 18):
 		for y in range(0, 10):
 			var cell := Vector2i(x, y)
-			if not map.is_cell_buildable(cell):
+			if cell == exclude or not map.is_cell_buildable(cell):
 				continue
 			var dist := map._distance_to_road(map.cell_to_center(cell))
 			if dist > 60.0 and dist < best_dist:
