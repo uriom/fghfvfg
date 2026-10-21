@@ -27,9 +27,10 @@ SettingsManager="*res://scripts/settings_manager.gd"
 
 [display]
 
+window/size/viewport_width=1152
+window/size/viewport_height=648
 window/size/window_width_override=1152
 window/size/window_height_override=648
 window/size/min_width=1024
 window/size/min_height=600
-window/stretch/mode="canvas_items"
-window/stretch/aspect="expand"
+window/stretch/mode="disabled"

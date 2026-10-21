@@ -16,11 +16,11 @@ extends Control
 
 const WAVE_DISPLAY_SCRIPT := preload("res://scripts/wave_display.gd")
 
-# --- Геометрия (рассчитана под 1152x648, canvas_items) ----------------------
+# --- Геометрия (базовый viewport 1152x648, HUD в экранных пикселях) ---------
 const TOP_BAR_HEIGHT := 64.0
 const SIDE_MARGIN := 16.0
-const LOADOUT_WIDTH := 680.0
-const CARD_SIZE := Vector2(206.0, 126.0)
+const LOADOUT_WIDTH := 580.0
+const CARD_SIZE := Vector2(172.0, 108.0)
 const CARD_GAP := 9.0
 
 # --- Палитра ----------------------------------------------------------------
@@ -393,8 +393,8 @@ func _create_card(tower_id: String, order: int) -> Dictionary:
 	pedestal.texture = _get_pedestal_texture()
 	pedestal.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	pedestal.stretch_mode = TextureRect.STRETCH_SCALE
-	pedestal.position = Vector2((CARD_SIZE.x - 86.0) * 0.5, 56.0)
-	pedestal.size = Vector2(86.0, 22.0)
+	pedestal.position = Vector2((CARD_SIZE.x - 76.0) * 0.5, 48.0)
+	pedestal.size = Vector2(76.0, 20.0)
 	pedestal.modulate = Color(accent, 0.42)
 	pedestal.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	card.add_child(pedestal)
@@ -403,8 +403,8 @@ func _create_card(tower_id: String, order: int) -> Dictionary:
 	beam.texture = _get_beam_texture()
 	beam.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	beam.stretch_mode = TextureRect.STRETCH_SCALE
-	beam.position = Vector2((CARD_SIZE.x - 56.0) * 0.5, 0.0)
-	beam.size = Vector2(56.0, 64.0)
+	beam.position = Vector2((CARD_SIZE.x - 52.0) * 0.5, 0.0)
+	beam.size = Vector2(52.0, 56.0)
 	beam.modulate = Color(accent, 0.13)
 	beam.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	card.add_child(beam)
@@ -414,8 +414,8 @@ func _create_card(tower_id: String, order: int) -> Dictionary:
 	icon.texture = _tower_texture(tower_id)
 	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	icon.position = Vector2((CARD_SIZE.x - 62.0) * 0.5, 2.0)
-	icon.size = Vector2(62.0, 62.0)
+	icon.position = Vector2((CARD_SIZE.x - 54.0) * 0.5, 0.0)
+	icon.size = Vector2(54.0, 54.0)
 	icon.pivot_offset = icon.size * 0.5
 	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	card.add_child(icon)
@@ -423,18 +423,18 @@ func _create_card(tower_id: String, order: int) -> Dictionary:
 	# Служебная нумерация слота и статус.
 	var slot := _label("%02d // TWR" % (order + 1), 8, Color(MUTED, 0.95), 1)
 	slot.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	slot.offset_left = 9.0
-	slot.offset_top = 5.0
-	slot.offset_right = 90.0
-	slot.offset_bottom = 18.0
+	slot.offset_left = 8.0
+	slot.offset_top = 4.0
+	slot.offset_right = 74.0
+	slot.offset_bottom = 16.0
 	card.add_child(slot)
 
 	var status := _label("READY", 8, GREEN, 1)
 	status.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	status.offset_left = -108.0
-	status.offset_right = -9.0
-	status.offset_top = 5.0
-	status.offset_bottom = 18.0
+	status.offset_left = -78.0
+	status.offset_right = -8.0
+	status.offset_top = 4.0
+	status.offset_bottom = 16.0
 	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	card.add_child(status)
 
@@ -442,24 +442,24 @@ func _create_card(tower_id: String, order: int) -> Dictionary:
 	divider.color = Color(accent, 0.16)
 	divider.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	divider.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	divider.offset_left = 12.0
-	divider.offset_right = -12.0
-	divider.offset_top = 69.0
-	divider.offset_bottom = 70.0
+	divider.offset_left = 10.0
+	divider.offset_right = -10.0
+	divider.offset_top = 58.0
+	divider.offset_bottom = 59.0
 	card.add_child(divider)
 
 	var name_label := _label(
-			String(CALLSIGNS.get(tower_id, String(stats["name"]).to_upper())), 14, TEXT, 2)
+			String(CALLSIGNS.get(tower_id, String(stats["name"]).to_upper())), 12, TEXT, 2)
 	name_label.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	name_label.offset_top = 73.0
-	name_label.offset_bottom = 94.0
+	name_label.offset_top = 62.0
+	name_label.offset_bottom = 80.0
 	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	card.add_child(name_label)
 
-	var cost_label := _label("(%d GOLD)" % cost, 11, AMBER, 1)
+	var cost_label := _label("(%d GOLD)" % cost, 10, AMBER, 1)
 	cost_label.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	cost_label.offset_top = 94.0
-	cost_label.offset_bottom = 112.0
+	cost_label.offset_top = 81.0
+	cost_label.offset_bottom = 98.0
 	cost_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	card.add_child(cost_label)
 

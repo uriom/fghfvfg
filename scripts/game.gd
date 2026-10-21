@@ -11,6 +11,7 @@ extends Node2D
 ## сервер в GameState.stats и рассылает в _end_match).
 
 const MATCH_TIME_LIMIT := 600.0   # сек; после этого Защитник побеждает
+const REFERENCE_VIEW_SIZE := Vector2(1152.0, 648.0)
 const END_SCREEN := preload("res://scenes/end_game_screen.tscn")
 
 var my_role := NetworkManager.Role.NONE
@@ -21,10 +22,13 @@ var _disk_poly: Polygon2D
 var _core_poly: Polygon2D
 
 @onready var road: Path2D = $Road
+@onready var camera: Camera2D = $Camera
 @onready var result_label: Label = %Result
 
 
 func _ready() -> void:
+	get_viewport().size_changed.connect(_fit_camera_to_viewport)
+	_fit_camera_to_viewport()
 	my_role = NetworkManager.local_role()
 	# Одинаковая инициализация состояния на обоих пирах (золото, HP, деки).
 	# Деки пришли через лобби-RPC — у обоих игроков одинаковые списки.
@@ -56,6 +60,26 @@ func _ready() -> void:
 	var pause_menu := preload("res://scripts/pause_menu.gd").new()
 	pause_menu.name = "PauseMenu"
 	add_child(pause_menu)
+
+
+func _fit_camera_to_viewport() -> void:
+	var view_size := get_viewport_rect().size
+	if view_size.x <= 0.0 or view_size.y <= 0.0:
+		return
+	# Мир масштабируется относительно базового поля, интерфейс остаётся в
+	# экранных пикселях: полноэкранный режим не раздувает кнопки и шрифты.
+	var fit := minf(view_size.x / REFERENCE_VIEW_SIZE.x,
+			view_size.y / REFERENCE_VIEW_SIZE.y)
+	fit = maxf(fit, 0.01)
+	camera.zoom = Vector2.ONE * fit
+	# Центрируем само поле в области между верхней статус-полосой и нижней
+	# панелью, а не в пустом центре всего окна.
+	var safe_bottom := maxf(64.0, view_size.y - 200.0)
+	var safe_center_y := (64.0 + safe_bottom) * 0.5
+	var screen_center_y := view_size.y * 0.5
+	var playfield_center_y := 240.0
+	camera.position = Vector2(REFERENCE_VIEW_SIZE.x * 0.5,
+			playfield_center_y + (screen_center_y - safe_center_y) / fit)
 
 
 func _process(delta: float) -> void:
@@ -105,21 +129,21 @@ func _build_road_visuals() -> void:
 	var shadow := Line2D.new()
 	shadow.name = "RoadShadow"
 	shadow.points = points
-	shadow.width = 78.0
+	shadow.width = 52.0
 	shadow.default_color = Color(0.008, 0.016, 0.026, 0.98)
 	shadow.z_index = -5
 	$Road.add_child(shadow)
 	var shoulder := Line2D.new()
 	shoulder.name = "RoadShoulder"
 	shoulder.points = points
-	shoulder.width = 62.0
+	shoulder.width = 50.0
 	shoulder.default_color = Color(0.045, 0.075, 0.10, 1.0)
 	shoulder.z_index = -4
 	$Road.add_child(shoulder)
 	var asphalt := Line2D.new()
 	asphalt.name = "RoadSurface"
 	asphalt.points = points
-	asphalt.width = 50.0
+	asphalt.width = 46.0
 	asphalt.default_color = Color(0.085, 0.12, 0.15, 1.0)
 	asphalt.z_index = -3
 	$Road.add_child(asphalt)
@@ -130,8 +154,8 @@ func _build_road_visuals() -> void:
 		var next := points[mini(i + 1, points.size() - 1)]
 		var tangent := (next - previous).normalized()
 		var normal := Vector2(-tangent.y, tangent.x)
-		edge_points[0].append(points[i] + normal * 27.0)
-		edge_points[1].append(points[i] - normal * 27.0)
+		edge_points[0].append(points[i] + normal * 24.0)
+		edge_points[1].append(points[i] - normal * 24.0)
 	for i in 2:
 		edges[i].name = "RoadNeonEdge%d" % i
 		edges[i].points = edge_points[i]

@@ -4,8 +4,8 @@ extends Control
 
 const WAVE_DISPLAY_SCRIPT := preload("res://scripts/wave_display.gd")
 const BAR_HEIGHT := 64.0
-const DOCK_HEIGHT := 154.0
-const DOCK_MAX_WIDTH := 1450.0
+const DOCK_HEIGHT := 150.0
+const DOCK_MAX_WIDTH := 820.0
 const CYAN := Color(0.22, 0.90, 1.0)
 const AMBER := Color(1.0, 0.76, 0.34)
 const RED := Color(1.0, 0.38, 0.42)
@@ -128,8 +128,8 @@ func _build_unit_dock() -> void:
 	_unit_dock.anchor_right = 0.5
 	_unit_dock.anchor_top = 1.0
 	_unit_dock.anchor_bottom = 1.0
-	_unit_dock.offset_left = -560.0
-	_unit_dock.offset_right = 560.0
+	_unit_dock.offset_left = -410.0
+	_unit_dock.offset_right = 410.0
 	_unit_dock.offset_top = -DOCK_HEIGHT - 10.0
 	_unit_dock.offset_bottom = -10.0
 	_unit_dock.add_theme_stylebox_override("panel", _panel_style(PANEL_BG, Color(CYAN, 0.28), 10))
@@ -165,21 +165,13 @@ func _build_unit_dock() -> void:
 	rule.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	column.add_child(rule)
 
-	var scroll := ScrollContainer.new()
-	scroll.name = "UnitScroll"
-	scroll.custom_minimum_size.y = 99.0
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
-	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	scroll.mouse_filter = Control.MOUSE_FILTER_STOP
-	column.add_child(scroll)
-
 	_unit_cards = HBoxContainer.new()
 	_unit_cards.add_theme_constant_override("separation", 8)
+	_unit_cards.alignment = BoxContainer.ALIGNMENT_CENTER
 	_unit_cards.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_unit_cards.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_unit_cards.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	scroll.add_child(_unit_cards)
+	column.add_child(_unit_cards)
 
 
 func _fit_unit_dock() -> void:
@@ -209,8 +201,8 @@ func rebuild_from_deck() -> void:
 func _create_unit_card(unit_id: String, stats: Dictionary) -> Control:
 	var card := PanelContainer.new()
 	card.name = "Unit_%s" % unit_id
-	card.custom_minimum_size = Vector2(194.0, 94.0)
-	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	card.custom_minimum_size = Vector2(220.0, 96.0)
+	card.size_flags_horizontal = Control.SIZE_FILL
 	card.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	card.add_theme_stylebox_override(
 		"panel", _panel_style(Color(0.035, 0.070, 0.098, 0.96), Color(CYAN, 0.23), 7)
@@ -233,7 +225,7 @@ func _create_unit_card(unit_id: String, stats: Dictionary) -> Control:
 	info_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	content.add_child(info_row)
 	var icon := TextureRect.new()
-	icon.custom_minimum_size = Vector2(38.0, 38.0)
+	icon.custom_minimum_size = Vector2(44.0, 44.0)
 	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -277,14 +269,16 @@ func _create_unit_card(unit_id: String, stats: Dictionary) -> Control:
 	content.add_child(buttons)
 	var send_one := Button.new()
 	send_one.text = "ОДИН"
-	send_one.custom_minimum_size = Vector2(0.0, 30.0)
+	send_one.add_theme_font_size_override("font_size", 12)
+	send_one.custom_minimum_size = Vector2(0.0, 28.0)
 	send_one.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	send_one.pressed.connect(_on_send_one.bind(unit_id))
 	buttons.add_child(send_one)
 	var send_wave := Button.new()
 	var wave_size := _unit_spawner.wave_size if _unit_spawner != null else 5
 	send_wave.text = "ВОЛНА ×%d" % wave_size
-	send_wave.custom_minimum_size = Vector2(0.0, 30.0)
+	send_wave.add_theme_font_size_override("font_size", 12)
+	send_wave.custom_minimum_size = Vector2(0.0, 28.0)
 	send_wave.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	send_wave.pressed.connect(_on_send_wave.bind(unit_id))
 	buttons.add_child(send_wave)

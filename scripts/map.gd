@@ -20,10 +20,10 @@ const TOWER_SCENE := preload("res://scenes/towers/tower.tscn")
 const HOVER_INVALID := Vector2i(-9999, -9999)
 const RANGE_SEGMENTS := 96          # 96 точек — визуально идеальная окружность
 
-@export var cell_size := Vector2i(64, 64)
-@export var buildable_rect := Rect2(0, 0, 1152, 648)  # зона, где разрешено строительство
+@export var cell_size := Vector2i(48, 48)
+@export var buildable_rect := Rect2(0, 96, 1152, 288)  # шесть ровных рядов клеток
 @export var road_node_path: NodePath                  # Path2D с дорогой
-@export var road_half_width := 46.0                   # запрет строить вплотную к дороге
+@export var road_half_width := 27.0                   # одна полоса дороги = один ряд клеток
 
 ## true — этот клиент Защитник: включает мышь, подсветку клетки и запросы.
 var active := false
@@ -34,6 +34,8 @@ var build_tower_id: String = GameDB.TOWER_ORDER[0]
 
 var _road_points := PackedVector2Array()
 var _hover_cell := HOVER_INVALID
+var _grid_root: Node2D
+var _hover_rect: Line2D
 
 # --- Тактический предпросмотр радиуса (HUD Защитника) ----------------------
 # Собирается лениво из стандартных нод: Polygon2D-заливка + три Line2D-кольца.
@@ -46,7 +48,7 @@ var _range_inner: Line2D
 var _range_pop: Tween
 var _range_pulse: Tween
 var _preview_tower_id := ""
-var _last_preview_cell := Vector2i(8, 4)  # дефолт — правее левой панели HUD
+var _last_preview_cell := Vector2i(12, 4)  # центральная клетка поля для предпросмотра
 
 
 func _ready() -> void:
@@ -266,8 +268,15 @@ func _distance_to_road(point: Vector2) -> float:
 	if _road_points.is_empty():
 		return INF
 	var best := INF
-	for p in _road_points:
-		best = minf(best, point.distance_to(p))
+	for i in range(_road_points.size() - 1):
+		var start := _road_points[i]
+		var segment := _road_points[i + 1] - start
+		var length_squared := segment.length_squared()
+		if length_squared <= 0.0001:
+			best = minf(best, point.distance_to(start))
+			continue
+		var along := clampf((point - start).dot(segment) / length_squared, 0.0, 1.0)
+		best = minf(best, point.distance_to(start + segment * along))
 	return best
 
 
@@ -318,10 +327,6 @@ func _spawn_tower(data: Dictionary) -> Node:
 # ---------------------------------------------------------------- Рисуем ----
 # Сетка и подсветка — стандартные ноды (Line2D), собранные лениво один раз.
 
-var _grid_root: Node2D
-var _hover_rect: Line2D
-
-
 ## Один раз создаёт ноды сетки (вертикальные + горизонтальные Line2D)
 ## и квадрат подсветки курсора (замкнутый Line2D из 4 углов клетки).
 func _ensure_grid_nodes() -> void:
@@ -331,7 +336,7 @@ func _ensure_grid_nodes() -> void:
 	_grid_root.name = "BuildGrid"
 	_grid_root.visible = false
 	add_child(_grid_root)
-	var grid_color := Color(1, 1, 1, 0.06)
+	var grid_color := Color(0.36, 0.72, 0.88, 0.14)
 	var start := Vector2i(buildable_rect.position) / cell_size
 	var end := Vector2i(buildable_rect.end) / cell_size
 	for x in range(start.x, end.x + 1):
