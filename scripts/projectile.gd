@@ -23,16 +23,23 @@ const TRAIL_POINTS := 8    # длина хвоста (точек Line2D)
 var damage := 0.0
 var speed := 320.0
 var target: Unit = null
-var _destination := Vector2.ZERO   # у мортиры — точка упреждения, не homing-цель
 var kind := "bullet"
 var splash_radius := 0.0
-## Доля урона на краю сплеша (из GameDB, для мортиры = 0.5).
+# Доля урона на краю сплеша (из GameDB, для мортиры = 0.5).
 var splash_falloff_min := 0.5
 var slow_percent := 0.0
 var slow_duration := 0.0
 var pulse_radius := 60.0
 var color := Color(1, 1, 0.75)
+# Тип урона башни (GameDB.DAMAGE_MATRIX). Матрица применяется в Unit.
+var damage_type := ""
+# Бьёт ли оружие воздух. У мортиры — нет: осколки не достают летающих,
+# даже если те пролетают через точку разрыва (иначе «наземная» башня
+# неявно становилась ПВО и ломала контр-плей).
+var hits_flying := true
 
+# У мортиры — точка упреждения, не homing-цель.
+var _destination := Vector2.ZERO
 var _total_distance := 1.0
 var _traveled := 0.0
 
@@ -53,6 +60,8 @@ func setup(from: Vector2, p_target: Unit, tower_stats: Dictionary) -> void:
 	splash_falloff_min = float(tower_stats.get("splash_falloff_min", 0.5))
 	slow_percent = float(tower_stats.get("slow_percent", 0.0))
 	slow_duration = float(tower_stats.get("slow_duration", 0.0))
+	damage_type = String(tower_stats.get("damage_type", ""))
+	hits_flying = bool(tower_stats.get("can_target_flying", true))
 	pulse_radius = float(tower_stats.get("pulse_radius", pulse_radius))
 	color = tower_stats["color"]
 	_destination = p_target.global_position if p_target != null else from
@@ -168,10 +177,12 @@ func _impact() -> void:
 		match kind:
 			"lob":
 				_impact_splash()
+			"flame":
+				_impact_flame()
 			"frost":
 				_impact_frost()
 			_:
-				target.take_damage(damage)
+				target.take_damage(damage, FXManager.DMG_NORMAL, damage_type)
 	queue_free()
 
 
@@ -182,17 +193,42 @@ func _impact_splash() -> void:
 		var unit := node as Unit
 		if unit == null or unit.is_dead:
 			continue
+		if not hits_flying and bool(unit.stats.get("flying", false)):
+			continue
 		var dist := global_position.distance_to(unit.global_position) - unit.get_radius()
 		if dist <= splash_radius:
 			# Спад урона берём из базы баланса (100% в центре -> 50% на краю).
 			var falloff := 1.0 - (1.0 - splash_falloff_min) * clampf(dist / splash_radius, 0.0, 1.0)
-			unit.take_damage(damage * falloff, FXManager.DMG_SPLASH)
+			unit.take_damage(damage * falloff, FXManager.DMG_SPLASH, damage_type)
+
+
+## Попадание струи огнемёта: прямое попадание + ожог соседей вплотную.
+## Радиус маленький (45 px из GameDB), поэтому это не «вторая мортира»:
+## огонь по-прежнему не достаёт воздух, а по тяжёлой броне слабее снайпера.
+func _impact_flame() -> void:
+	if target == null or not is_instance_valid(target):
+		return
+	var impact := target.global_position
+	target.take_damage(damage, FXManager.DMG_NORMAL, damage_type)
+	if splash_radius <= 0.0:
+		return
+	for node in get_tree().get_nodes_in_group("units"):
+		var unit := node as Unit
+		if unit == null or unit.is_dead or unit == target:
+			continue
+		if not hits_flying and bool(unit.stats.get("flying", false)):
+			continue
+		var dist := impact.distance_to(unit.global_position) - unit.get_radius()
+		if dist <= splash_radius:
+			var falloff := 1.0 - (1.0 - splash_falloff_min) \
+					* clampf(dist / splash_radius, 0.0, 1.0)
+			unit.take_damage(damage * falloff, FXManager.DMG_SPLASH, damage_type)
 
 
 ## Попадание криостана: урон + замедление (летающим — только урон).
 func _impact_frost() -> void:
 	FXManager.frost_pulse.rpc(global_position, pulse_radius)
-	target.take_damage(damage, FXManager.DMG_FROST)
+	target.take_damage(damage, FXManager.DMG_FROST, damage_type)
 	target._apply_slow(slow_percent, slow_duration)
 
 

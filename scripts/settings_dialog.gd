@@ -55,8 +55,11 @@ func _build() -> void:
 	_add_slider(box, "Общая громкость", "master_volume", SettingsManager.master_volume)
 	_add_slider(box, "Музыка", "music_volume", SettingsManager.music_volume)
 	_add_slider(box, "Эффекты", "sfx_volume", SettingsManager.sfx_volume)
-	_add_option(box, "Качество 2D сглаживания", "quality", SettingsManager.QUALITY_LABELS, SettingsManager.quality)
-	_add_option(box, "Частота кадров", "target_fps", ["30 FPS", "60 FPS", "120 FPS", "240 FPS"], _fps_index(SettingsManager.target_fps))
+	_add_option(box, "Качество 2D сглаживания", "quality",
+			SettingsManager.QUALITY_LABELS, SettingsManager.quality)
+	_add_option(box, "Частота кадров", "target_fps",
+			["30 FPS", "60 FPS", "120 FPS", "240 FPS"],
+			_fps_index(SettingsManager.target_fps))
 	_add_check(box, "Полноэкранный режим", "fullscreen", SettingsManager.fullscreen)
 	_add_check(box, "Вертикальная синхронизация", "vsync", SettingsManager.vsync)
 	var hint := Label.new()
@@ -89,7 +92,8 @@ func _add_slider(parent: VBoxContainer, caption: String, key: String, initial: f
 	row.add_child(slider)
 
 
-func _add_option(parent: VBoxContainer, caption: String, key: String, items: Array, selected: int) -> void:
+func _add_option(parent: VBoxContainer, caption: String, key: String, items: Array,
+		selected: int) -> void:
 	var row := HBoxContainer.new()
 	parent.add_child(row)
 	var label := Label.new()

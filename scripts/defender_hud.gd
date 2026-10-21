@@ -5,16 +5,16 @@ extends Control
 ## TextureRect / ColorRect. Ни одного _draw.
 ##
 ## ЧТО ЗДЕСЬ ЕСТЬ:
-##   * Верхняя панель: WAVE-индикатор, GOLD, полоса BASE HP с неоновым свечением.
+##   * Верхняя панель: индикатор фазы раунда, КРЕДИТЫ, полоса HP базы.
 ##   * Карточки башен: горизонтальная дека-полоса в нижней зоне, иконка 2.5D,
-##     статусы READY / SELECTED / LOW FUNDS, затемнение при нехватке золота.
+##     статусы «ГОТОВО» / «ВЫБРАНО» / «МАЛО КРЕДИТОВ», затемнение при нехватке.
 ##   * Hover/selection поднимают тактический радиус на земле через GameMap.
 ##   * Панч-анимации золота/HP и всплывающая дельта («+100», «−50»).
 ##
 ## ИНТЕГРАЦИЯ: game.gd вызывает rebuild_from_deck() ПОСЛЕ setup_match(),
 ## поэтому состав карточек всегда совпадает с деком Защитника этого матча.
 
-const WAVE_DISPLAY_SCRIPT := preload("res://scripts/wave_display.gd")
+const PHASE_DISPLAY_SCRIPT := preload("res://scripts/phase_display.gd")
 
 # --- Геометрия (базовый viewport 1152x648, HUD в экранных пикселях) ---------
 const TOP_BAR_HEIGHT := 64.0
@@ -49,7 +49,7 @@ var _built := false
 var _locked := false
 
 var _top_bar: PanelContainer
-var _wave_display: WaveDisplay
+var _phase_display: PhaseDisplay
 var _gold_panel: PanelContainer
 var _gold_label: Label
 var _base_bar: ProgressBar
@@ -59,9 +59,12 @@ var _base_fill: StyleBoxFlat
 var _loadout_panel: PanelContainer
 var _cards_box: HBoxContainer
 var _slots_label: Label
+var _scout_label: Label
 
 # tower_id -> Dictionary с дочерними нодами и параметрами карточки.
 var _card_data: Dictionary = {}
+# ability_id -> Button (РЕМОНТ / ОВЕРКЛОК).
+var _ability_buttons: Dictionary = {}
 var _card_group: ButtonGroup
 var _deck_snapshot: Array[String] = []
 var _selected_tower_id := ""
@@ -75,8 +78,6 @@ var _base_tween: Tween
 var _base_label_tween: Tween
 
 # Кэшированные процедурные текстуры для «голограммы» карточек.
-var _pedestal_texture: GradientTexture2D
-var _beam_texture: GradientTexture2D
 
 
 func _ready() -> void:
@@ -92,6 +93,10 @@ func _ready() -> void:
 	GameState.game_ended.connect(_on_game_ended)
 	visibility_changed.connect(_on_visibility_changed)
 	resized.connect(_fit_loadout_panel)
+
+	GameState.round_ended.connect(_on_round_ended)
+	GameState.ability_used.connect(_on_ability_used)
+	GameState.phase_changed.connect(_on_phase_changed)
 
 	_refresh_from_state()
 	# Нужно для самостоятельного запуска HUD-сцены; в матче game.gd вызовет
@@ -119,7 +124,7 @@ func _build_top_bar() -> void:
 	_top_bar.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 	_top_bar.offset_bottom = TOP_BAR_HEIGHT
 
-	var panel_style := _panel_style(PANEL_BG, Color(CYAN, 0.32), 0, 0,
+	var panel_style := HudKit.panel_style(PANEL_BG, Color(CYAN, 0.32), 0, 0,
 			Color(CYAN, 0.10), 10)
 	panel_style.border_width_bottom = 1
 	_top_bar.add_theme_stylebox_override("panel", panel_style)
@@ -148,13 +153,13 @@ func _build_top_bar() -> void:
 	var subtitle := _label("DEFENDER // DEFENSE PROTOCOL", 9, MUTED, 1)
 	brand.add_child(subtitle)
 
-	row.add_child(_vertical_line(30.0, Color(1, 1, 1, 0.12)))
+	row.add_child(HudKit.vertical_line(30.0, Color(1, 1, 1, 0.12)))
 
 	# LIVE-индикатор волны.
-	_wave_display = WAVE_DISPLAY_SCRIPT.new() as WaveDisplay
-	_wave_display.custom_minimum_size = Vector2(252.0, 42.0)
-	_wave_display.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	row.add_child(_wave_display)
+	_phase_display = PHASE_DISPLAY_SCRIPT.new() as PhaseDisplay
+	_phase_display.custom_minimum_size = Vector2(250.0, 42.0)
+	_phase_display.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(_phase_display)
 
 	# Пружина отжимает ресурсы вправо.
 	var spacer := Control.new()
@@ -171,7 +176,7 @@ func _build_gold_capsule(parent: HBoxContainer) -> void:
 	_gold_panel.custom_minimum_size = Vector2(154.0, 32.0)
 	_gold_panel.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_gold_panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	_gold_panel.add_theme_stylebox_override("panel", _panel_style(
+	_gold_panel.add_theme_stylebox_override("panel", HudKit.panel_style(
 			Color(0.06, 0.045, 0.015, 0.72), Color(AMBER, 0.34), 1, 7))
 	parent.add_child(_gold_panel)
 
@@ -188,8 +193,8 @@ func _build_gold_capsule(parent: HBoxContainer) -> void:
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	margin.add_child(row)
 
-	row.add_child(_diamond(AMBER, 9.0))
-	_gold_label = _label("GOLD: 0", 17, TEXT, 2)
+	row.add_child(HudKit.diamond(AMBER, 9.0))
+	_gold_label = _label("КРЕДИТЫ · 0", 15, TEXT, 2)
 	row.add_child(_gold_label)
 
 
@@ -198,7 +203,7 @@ func _build_base_bar(parent: HBoxContainer) -> void:
 	wrap.custom_minimum_size = Vector2(282.0, 32.0)
 	wrap.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	wrap.mouse_filter = Control.MOUSE_FILTER_STOP
-	wrap.add_theme_stylebox_override("panel", _panel_style(
+	wrap.add_theme_stylebox_override("panel", HudKit.panel_style(
 			Color(0.015, 0.045, 0.030, 0.74), Color(GREEN, 0.28), 1, 7))
 	parent.add_child(wrap)
 
@@ -214,18 +219,18 @@ func _build_base_bar(parent: HBoxContainer) -> void:
 	_base_bar.custom_minimum_size = Vector2(278.0, 26.0)
 	_base_bar.show_percentage = false
 	_base_bar.min_value = 0.0
-	_base_bar.max_value = GameState.BASE_MAX_HP
-	_base_bar.value = GameState.BASE_MAX_HP
+	_base_bar.max_value = GameState.ROUND_BASE_HP
+	_base_bar.value = GameState.ROUND_BASE_HP
 	_base_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_base_bar.add_theme_stylebox_override("background", _panel_style(
+	_base_bar.add_theme_stylebox_override("background", HudKit.panel_style(
 			Color(0.01, 0.05, 0.03, 0.92), Color(GREEN, 0.16), 1, 5))
-	_base_fill = _panel_style(GREEN, Color.TRANSPARENT, 0, 5)
+	_base_fill = HudKit.panel_style(GREEN, Color.TRANSPARENT, 0, 5)
 	_base_fill.shadow_color = Color(GREEN, 0.50)
 	_base_fill.shadow_size = 6
 	_base_bar.add_theme_stylebox_override("fill", _base_fill)
 	margin.add_child(_base_bar)
 
-	_base_label = _label("BASE: %d / %d HP" % [GameState.BASE_MAX_HP, GameState.BASE_MAX_HP],
+	_base_label = _label("БАЗА: %d / %d" % [GameState.ROUND_BASE_HP, GameState.ROUND_BASE_HP],
 			13, Color(0.88, 1.0, 0.92), 2)
 	_base_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_base_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -240,7 +245,7 @@ func _build_loadout() -> void:
 	_loadout_panel.name = "EquipmentPanel"
 	_loadout_panel.custom_minimum_size = Vector2(LOADOUT_WIDTH, 0.0)
 	_loadout_panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	_loadout_panel.add_theme_stylebox_override("panel", _panel_style(
+	_loadout_panel.add_theme_stylebox_override("panel", HudKit.panel_style(
 			PANEL_BG, Color(CYAN, 0.22), 1, 10, Color(0, 0, 0, 0.55), 14))
 	add_child(_loadout_panel)
 
@@ -282,9 +287,42 @@ func _build_loadout() -> void:
 	_cards_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	column.add_child(_cards_box)
 
-	var footer := _label("HOVER — RANGE PREVIEW  ·  LMB — SELECT & BUILD", 8, MUTED, 1)
-	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	# РАЗВЕДКА: что штурмовик закупил в подготовке. Без этого постройка ПВО
+	# была слепой ставкой; теперь у Защитника есть информация для решения.
+	_scout_label = _label("РАЗВЕДКА: тихо", 9, MUTED, 1)
+	_scout_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	column.add_child(_scout_label)
+
+	var footer := HBoxContainer.new()
+	footer.add_theme_constant_override("separation", 8)
+	footer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	column.add_child(footer)
+
+	var hints := _label("HOVER — RADIUS  ·  LMB — ВЫБОР И ПОСТРОЙКА", 8, MUTED, 1)
+	hints.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hints.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	footer.add_child(hints)
+
+	_build_ability_buttons(footer)
+
+
+## Две способности Защитника (SPEC-01). Каждая — один раз за раунд.
+## Логика применения живёт на сервере в GameState, здесь только ввод/статус.
+func _build_ability_buttons(parent: HBoxContainer) -> void:
+	for spec in [
+		{"id": "repair", "text": "РЕМОНТ +2", "color": GREEN, "hint": "Починить базу на 2 HP"},
+		{"id": "overclock", "text": "ОВЕРКЛОК +40%", "color": CYAN, "hint": "Ускорить все башни на 4 с"},
+	]:
+		var button := Button.new()
+		button.text = String(spec["text"])
+		button.tooltip_text = String(spec["hint"])
+		button.focus_mode = Control.FOCUS_NONE
+		button.custom_minimum_size = Vector2(112.0, 24.0)
+		button.add_theme_font_size_override("font_size", 9)
+		button.add_theme_color_override("font_color", spec["color"])
+		button.pressed.connect(_on_ability_pressed.bind(String(spec["id"])))
+		parent.add_child(button)
+		_ability_buttons[String(spec["id"])] = button
 
 
 # ============================================================== КАРТОЧКИ =====
@@ -317,7 +355,7 @@ func rebuild_from_deck() -> void:
 		_card_data[tower_id] = _create_card(tower_id, order)
 		order += 1
 
-	_slots_label.text = "%02d SLOTS" % _card_data.size()
+	_update_slots_label()
 
 	if _card_data.is_empty():
 		var empty := _label("NO TOWERS EQUIPPED", 11, RED, 2)
@@ -360,10 +398,10 @@ func _create_card(tower_id: String, order: int) -> Dictionary:
 	card.custom_minimum_size = CARD_SIZE
 	card.toggle_mode = true
 	card.button_group = _card_group
-	card.focus_mode = Control.FOCUS_NONE
+	card.focus_mode = Control.FOCUS_ALL   # навигация с клавиатуры/геймпада
 	card.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	card.mouse_filter = Control.MOUSE_FILTER_STOP
-	card.tooltip_text = "%s — %d GOLD\nRange: %d px · Damage: %d · Rate: %.1f/s" % [
+	card.tooltip_text = "%s — %d кр.\nРадиус: %d · Урон: %d · Скорость: %.1f/с" % [
 		CALLSIGNS.get(tower_id, String(stats["name"]).to_upper()),
 		cost, int(stats["range"]), int(stats.get("damage", 0)),
 		float(stats.get("fire_rate", 0.0)),
@@ -371,7 +409,7 @@ func _create_card(tower_id: String, order: int) -> Dictionary:
 	_cards_box.add_child(card)
 
 	# Фон с индивидуальным StyleBoxFlat — его цвет границы меняется по статусу.
-	var bg_style := _panel_style(CARD_BG, Color(accent, 0.20), 1, 9)
+	var bg_style := HudKit.panel_style(CARD_BG, Color(accent, 0.20), 1, 9)
 	var bg := Panel.new()
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -390,7 +428,7 @@ func _create_card(tower_id: String, order: int) -> Dictionary:
 
 	# Подиум и вертикальный «лук» голограммы под иконкой (2.5D-ощущение).
 	var pedestal := TextureRect.new()
-	pedestal.texture = _get_pedestal_texture()
+	pedestal.texture = HudKit.pedestal_texture()
 	pedestal.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	pedestal.stretch_mode = TextureRect.STRETCH_SCALE
 	pedestal.position = Vector2((CARD_SIZE.x - 76.0) * 0.5, 48.0)
@@ -400,7 +438,7 @@ func _create_card(tower_id: String, order: int) -> Dictionary:
 	card.add_child(pedestal)
 
 	var beam := TextureRect.new()
-	beam.texture = _get_beam_texture()
+	beam.texture = HudKit.beam_texture()
 	beam.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	beam.stretch_mode = TextureRect.STRETCH_SCALE
 	beam.position = Vector2((CARD_SIZE.x - 52.0) * 0.5, 0.0)
@@ -456,7 +494,7 @@ func _create_card(tower_id: String, order: int) -> Dictionary:
 	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	card.add_child(name_label)
 
-	var cost_label := _label("(%d GOLD)" % cost, 10, AMBER, 1)
+	var cost_label := _label("(%d кр.)" % cost, 10, AMBER, 1)
 	cost_label.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	cost_label.offset_top = 81.0
 	cost_label.offset_bottom = 98.0
@@ -468,7 +506,7 @@ func _create_card(tower_id: String, order: int) -> Dictionary:
 	hover_frame.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	hover_frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hover_frame.visible = false
-	hover_frame.add_theme_stylebox_override("panel", _panel_style(
+	hover_frame.add_theme_stylebox_override("panel", HudKit.panel_style(
 			Color.TRANSPARENT, Color(1, 1, 1, 0.55), 1, 9))
 	card.add_child(hover_frame)
 
@@ -476,7 +514,7 @@ func _create_card(tower_id: String, order: int) -> Dictionary:
 	glow_frame.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	glow_frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	glow_frame.visible = false
-	glow_frame.add_theme_stylebox_override("panel", _panel_style(
+	glow_frame.add_theme_stylebox_override("panel", HudKit.panel_style(
 			Color.TRANSPARENT, CYAN, 2, 9, Color(CYAN, 0.42), 9))
 	card.add_child(glow_frame)
 
@@ -515,14 +553,23 @@ func _refresh_card_states() -> void:
 		hover_frame.visible = hovered and not selected
 
 		var status: Label = data["status"]
-		if selected:
-			status.text = "SELECTED"
+		var placed := _map.tower_count(tower_id) if _map != null else 0
+		if placed >= GameDB.MAX_TOWERS_PER_TYPE:
+			status.text = "ЛИМИТ %d/%d" % [placed, GameDB.MAX_TOWERS_PER_TYPE]
+			status.add_theme_color_override("font_color", MUTED)
+			affordable = false
+		elif not GameState.is_planning():
+			status.text = "ШТУРМ"
+			status.add_theme_color_override("font_color", MUTED)
+			affordable = false
+		elif selected:
+			status.text = "ВЫБРАНО %d/%d" % [placed, GameDB.MAX_TOWERS_PER_TYPE]
 			status.add_theme_color_override("font_color", CYAN)
 		elif affordable:
-			status.text = "READY"
+			status.text = "ГОТОВО %d/%d" % [placed, GameDB.MAX_TOWERS_PER_TYPE]
 			status.add_theme_color_override("font_color", GREEN)
 		else:
-			status.text = "LOW FUNDS"
+			status.text = "МАЛО КРЕДИТОВ"
 			status.add_theme_color_override("font_color", RED)
 
 		var cost_label: Label = data["cost"]
@@ -536,6 +583,7 @@ func _refresh_card_states() -> void:
 		bg_style.border_color = Color(accent, 0.55 if selected else (0.20 if affordable else 0.08))
 
 		_set_glow_pulse(data, selected)
+	_update_slots_label()
 
 
 # ============================================================ ВЗАИМОДЕЙСТВИЕ =
@@ -635,7 +683,7 @@ func _on_gold_changed(peer_id: int, amount: int) -> void:
 		return
 	var delta := 0 if _last_gold < 0 else amount - _last_gold
 	_last_gold = amount
-	_gold_label.text = "GOLD: %d" % amount
+	_gold_label.text = "КРЕДИТЫ · %d" % amount
 	_refresh_card_states()
 	if delta != 0:
 		_spawn_gold_delta(delta)
@@ -651,13 +699,13 @@ func _on_base_hp_changed(hp: int, max_hp: int) -> void:
 func _refresh_from_state() -> void:
 	var local := _local_peer()
 	var gold := int(GameState.gold.get(local, 0))
-	_gold_label.text = "GOLD: %d" % gold
+	_gold_label.text = "КРЕДИТЫ · %d" % gold
 	# Если золото уже установлено (позднее создание HUD), не показываем
 	# ложную дельту при первом сигнале. Если ещё нет — ждём setup_match.
 	_last_gold = gold if GameState.gold.has(local) else -1
 
 	_last_base_hp = GameState.base_hp
-	_refresh_base(GameState.base_hp, GameState.BASE_MAX_HP, false)
+	_refresh_base(GameState.base_hp, GameState.ROUND_BASE_HP, false)
 	_refresh_card_states()
 
 
@@ -671,7 +719,7 @@ func _refresh_base(hp: int, max_hp: int, animate: bool) -> void:
 	_base_bar.max_value = safe_max
 	_base_fill.bg_color = tint
 	_base_fill.shadow_color = Color(tint, 0.50)
-	_base_label.text = "BASE: %d / %d HP" % [hp, max_hp]
+	_base_label.text = "БАЗА: %d / %d" % [hp, max_hp]
 	_base_label.add_theme_color_override("font_color",
 			Color(0.88, 1.0, 0.92) if ratio > 0.5 else Color.WHITE)
 
@@ -781,46 +829,6 @@ func _label(value: String, font_size: int, color: Color, outline := 2) -> Label:
 	return label
 
 
-func _panel_style(bg: Color, border: Color, border_width: int, radius: int,
-		shadow := Color.TRANSPARENT, shadow_size := 0) -> StyleBoxFlat:
-	var box := StyleBoxFlat.new()
-	box.bg_color = bg
-	box.border_color = border
-	box.set_border_width_all(border_width)
-	box.set_corner_radius_all(radius)
-	box.shadow_color = shadow
-	box.shadow_size = shadow_size
-	box.anti_aliasing = true
-	return box
-
-
-func _vertical_line(height: float, color: Color) -> ColorRect:
-	var line := ColorRect.new()
-	line.custom_minimum_size = Vector2(1.0, height)
-	line.color = color
-	line.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	return line
-
-
-## Ромб из ColorRect (без шрифтовых глифов и без _draw).
-func _diamond(color: Color, size_px: float) -> Control:
-	var root := Control.new()
-	root.custom_minimum_size = Vector2(size_px + 4.0, size_px + 4.0)
-	root.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
-
-	var rect := ColorRect.new()
-	rect.color = color
-	rect.size = Vector2(size_px, size_px)
-	rect.position = Vector2(2.0, 2.0)
-	rect.pivot_offset = rect.size * 0.5
-	rect.rotation_degrees = 45.0
-	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(rect)
-	return root
-
-
 func _fit_loadout_panel() -> void:
 	if _loadout_panel == null or not is_inside_tree():
 		return
@@ -832,6 +840,93 @@ func _fit_loadout_panel() -> void:
 	_loadout_panel.position = Vector2(
 			(viewport_size.x - panel_width) * 0.5,
 			maxf(TOP_BAR_HEIGHT + 8.0, viewport_size.y - panel_height - 12.0))
+
+
+## «03/08 БАШЕН» — сколько всего слотов занято и сколько уже не поставить.
+func _update_slots_label() -> void:
+	if _slots_label == null:
+		return
+	var used := _map.total_towers() if _map != null else 0
+	_slots_label.text = "%02d/%02d БАШЕН" % [used, GameDB.MAX_TOWERS_TOTAL]
+	_slots_label.add_theme_color_override("font_color",
+			AMBER if used >= GameDB.MAX_TOWERS_TOTAL else CYAN)
+
+
+func _on_ability_pressed(ability: String) -> void:
+	if GameState.game_over:
+		return
+	if multiplayer.is_server():
+		GameState.apply_ability(multiplayer.get_unique_id(), ability)
+	else:
+		GameState.request_ability.rpc_id(1, ability)
+
+
+## Один раз за раунд: гасим кнопку, чтобы клик не уходил в сервер впустую.
+func _refresh_ability_buttons() -> void:
+	for ability in _ability_buttons:
+		var button: Button = _ability_buttons[ability]
+		if not is_instance_valid(button):
+			continue
+		var used: Array = GameState.abilities_used.get(_local_peer(), [])
+		var available := not used.has(ability) and not GameState.game_over
+		if ability == "repair":
+			available = available and GameState.base_hp < GameState.ROUND_BASE_HP \
+					and GameState.base_hp > 0
+		else:
+			available = available and GameState.is_assault()
+		button.disabled = not available
+		button.modulate = Color.WHITE if available else Color(0.55, 0.6, 0.66)
+
+
+func _on_ability_used(_ability: String) -> void:
+	_refresh_ability_buttons()
+
+
+func _on_round_ended(_round_index: int, _attacker_won: bool,
+		_defender_wins: int, _attacker_wins: int) -> void:
+	_refresh_ability_buttons()
+	_refresh_card_states()
+
+
+func _on_phase_changed(_round_index: int, _phase: int, _duration: float) -> void:
+	_refresh_ability_buttons()
+	_refresh_card_states()
+	_update_slots_label()
+
+
+## Разведка: состав очереди Штурмовика, сгруппированный по типам.
+## «Змей ×8» — прямой сигнал строить ПВО; «Танк ×6» — брать снайперов.
+func _refresh_scout() -> void:
+	if _scout_label == null:
+		return
+	var spawner := get_tree().current_scene.get_node_or_null("Road/UnitSpawner")
+	if spawner == null:
+		return
+	var counts: Dictionary = {}
+	for id in spawner.queue_composition():
+		counts[id] = int(counts.get(id, 0)) + 1
+	if counts.is_empty():
+		_scout_label.text = "РАЗВЕДКА: тихо — штурмовик копит кредиты"
+		_scout_label.add_theme_color_override("font_color", MUTED)
+		return
+	var parts: Array[String] = []
+	var air_threat := false
+	for id in counts:
+		var name := String(GameDB.UNITS[id]["name"]) if GameDB.UNITS.has(id) else String(id)
+		parts.append("%s ×%d" % [name, int(counts[id])])
+		if GameDB.UNITS.has(id) and bool(GameDB.UNITS[id].get("flying", false)):
+			air_threat = true
+	var text := "РАЗВЕДКА: " + ", ".join(parts)
+	if air_threat:
+		text += "  ⚠ ВОЗДУХ"
+	_scout_label.text = text
+	_scout_label.add_theme_color_override("font_color", RED if air_threat else AMBER)
+
+
+func _process(_delta: float) -> void:
+	# Кнопки способностей зависят от HP/фазы — обновляем недорого каждый кадр.
+	_refresh_ability_buttons()
+	_refresh_scout()
 
 
 func _local_peer() -> int:
@@ -853,37 +948,3 @@ func _tower_texture(tower_id: String) -> Texture2D:
 	if ResourceLoader.exists(path):
 		return load(path) as Texture2D
 	return null
-
-
-## Радиальный мягкий блик — «подиум» под иконкой башни.
-func _get_pedestal_texture() -> GradientTexture2D:
-	if _pedestal_texture != null:
-		return _pedestal_texture
-	var gradient := Gradient.new()
-	gradient.set_color(0, Color(1, 1, 1, 0.85))
-	gradient.set_color(1, Color(1, 1, 1, 0.0))
-	_pedestal_texture = GradientTexture2D.new()
-	_pedestal_texture.gradient = gradient
-	_pedestal_texture.fill = GradientTexture2D.FILL_RADIAL
-	_pedestal_texture.fill_from = Vector2(0.5, 0.5)
-	_pedestal_texture.fill_to = Vector2(1.0, 0.5)
-	_pedestal_texture.width = 64
-	_pedestal_texture.height = 64
-	return _pedestal_texture
-
-
-## Вертикальный градиент — световой столб голограммы над подиумом.
-func _get_beam_texture() -> GradientTexture2D:
-	if _beam_texture != null:
-		return _beam_texture
-	var gradient := Gradient.new()
-	gradient.set_color(0, Color(1, 1, 1, 0.75))
-	gradient.set_color(1, Color(1, 1, 1, 0.0))
-	_beam_texture = GradientTexture2D.new()
-	_beam_texture.gradient = gradient
-	_beam_texture.fill = GradientTexture2D.FILL_LINEAR
-	_beam_texture.fill_from = Vector2(0.5, 1.0)
-	_beam_texture.fill_to = Vector2(0.5, 0.0)
-	_beam_texture.width = 32
-	_beam_texture.height = 64
-	return _beam_texture

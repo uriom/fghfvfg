@@ -12,6 +12,7 @@ const SCRIPTS := [
 	"res://autoload/fx_manager.gd",
 	"res://scripts/audio_manager.gd",
 	"res://scripts/ui_theme.gd",
+	"res://scripts/hud_kit.gd",
 	"res://scripts/settings_manager.gd",
 	"res://scripts/settings_dialog.gd",
 	"res://scripts/pause_menu.gd",
@@ -26,7 +27,9 @@ const SCRIPTS := [
 	"res://scripts/defender_hud.gd",
 	"res://scripts/attacker_hud.gd",
 	"res://scripts/end_game_screen.gd",
-	"res://scripts/wave_display.gd",
+	"res://scripts/phase_display.gd",
+	"res://scripts/bot_controller.gd",
+	"res://scripts/training_tips.gd",
 ]
 
 const SCENES := [

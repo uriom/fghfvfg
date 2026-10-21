@@ -26,12 +26,18 @@ const GAME_SCENE := "res://scenes/game.tscn"
 const PORT := 24565
 const MAX_CLIENTS := 1                  # режим 1v1: максимум один клиент
 const STEAM_CHANNEL := 0                # канал SteamMultiplayerPeer
+## Соло-тренировка: оффлайн-пир, игрок = Защитник (peer 1), бот = Штурмовик
+## (виртуальный peer 2). Бот ходит серверными методами напрямую, поэтому
+## отдельного сетевого транспорта не нужно — матч идёт «на одном столе».
+const BOT_PEER := 2
 
 ## peer_id -> {"name": String, "role": Role}. Одинаковый у обоих пиров,
 ## синхронизируется сервером через _sync_players().
 var players: Dictionary = {}
 
 var transport := Transport.ENET         # дефолт: без GodotSteam только ENet
+## Идёт ли соло-матч. Сбрасывается в end_session().
+var solo := false
 
 var _my_name := "Игрок"
 
@@ -121,6 +127,31 @@ func start_match() -> void:
 	_start_match.rpc()
 
 
+## Соло-тренировка против бота: мгновенный старт без сети.
+## Игрок всегда Защитник — так первый матч учит строить и держать базу.
+func start_solo() -> void:
+	# Чистим возможный прошлый сеанс, но без смены сцены.
+	SteamManager.stop_matchmaking()
+	multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
+	solo = true
+	players = {
+		1: _host_entry(),
+		BOT_PEER: {
+			"name": "ТРЕНЕР",
+			"role": Role.ATTACKER,
+			"towers": LoadoutManager.effective_towers(),
+			"units": LoadoutManager.effective_units(),
+		},
+	}
+	player_list_changed.emit()
+	_start_match.rpc()
+
+
+## Идёт ли сейчас соло-матч (без сетевого соперника).
+func is_solo() -> bool:
+	return solo and _is_offline()
+
+
 ## Полностью завершить сетевой сеанс и вернуться в меню.
 func end_session() -> void:
 	# Гасим активный поиск матча (тихо, без повторного end_session).
@@ -130,6 +161,7 @@ func end_session() -> void:
 		multiplayer.multiplayer_peer.close()
 	multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 	SteamManager.leave_lobby()
+	solo = false
 	players.clear()
 	player_list_changed.emit()
 	var scene := get_tree().current_scene
@@ -170,7 +202,8 @@ func _on_steam_lobby_created(steam_lobby_id: int) -> void:
 	multiplayer.multiplayer_peer = peer
 	players = {1: _host_entry()}
 	player_list_changed.emit()
-	lobby_message.emit("Steam-лобби готово (id %d). Пригласите друга или ждём из поиска…" % steam_lobby_id)
+	lobby_message.emit("Steam-лобби готово (id %d). Пригласите друга или ждём из поиска…"
+			% steam_lobby_id)
 
 
 ## Запись хоста в составе лобби: роль Защитника + его бойевой дек
@@ -233,6 +266,8 @@ func local_role() -> Role:
 
 
 func defender_peer() -> int:
+	if solo:
+		return 1
 	for id in players:
 		if players[id]["role"] == Role.DEFENDER:
 			return id
@@ -240,6 +275,8 @@ func defender_peer() -> int:
 
 
 func attacker_peer() -> int:
+	if solo:
+		return BOT_PEER
 	for id in players:
 		if players[id]["role"] == Role.ATTACKER:
 			return id

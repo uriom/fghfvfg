@@ -44,9 +44,11 @@ func _ensure_input_actions() -> void:
 
 
 func apply() -> void:
-	var mode := DisplayServer.WINDOW_MODE_FULLSCREEN if fullscreen else DisplayServer.WINDOW_MODE_WINDOWED
+	var mode := DisplayServer.WINDOW_MODE_FULLSCREEN if fullscreen \
+			else DisplayServer.WINDOW_MODE_WINDOWED
 	DisplayServer.window_set_mode(mode)
-	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED if vsync else DisplayServer.VSYNC_DISABLED)
+	var vsync_mode := DisplayServer.VSYNC_ENABLED if vsync else DisplayServer.VSYNC_DISABLED
+	DisplayServer.window_set_vsync_mode(vsync_mode)
 	Engine.max_fps = target_fps
 	var msaa: int = MSAA_LEVELS[clampi(quality, 0, 2)]
 	get_viewport().msaa_2d = msaa
@@ -71,9 +73,13 @@ func update_option(key: String, value: Variant) -> void:
 		"target_fps": target_fps = clampi(int(value), 30, 240)
 		_: return
 	if fullscreen != old_fullscreen:
-		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN if fullscreen else DisplayServer.WINDOW_MODE_WINDOWED)
+		var mode := DisplayServer.WINDOW_MODE_FULLSCREEN if fullscreen \
+				else DisplayServer.WINDOW_MODE_WINDOWED
+		DisplayServer.window_set_mode(mode)
 	if vsync != old_vsync:
-		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED if vsync else DisplayServer.VSYNC_DISABLED)
+		var vsync_mode := DisplayServer.VSYNC_ENABLED if vsync \
+				else DisplayServer.VSYNC_DISABLED
+		DisplayServer.window_set_vsync_mode(vsync_mode)
 	if target_fps != old_fps:
 		Engine.max_fps = target_fps
 	if quality != old_quality:

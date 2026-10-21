@@ -23,6 +23,8 @@ signal lobbies_received(lobby_ids: Array)   # список публичных л
 signal matchmaking_status(text: String)     # статус поиска для меню
 signal matchmaking_stopped(reason: String)  # поиск завершён/отменён
 
+enum MMPhase { IDLE, SEARCHING, HOSTING, COUNTDOWN }
+
 const LOBBY_MODE := "towerduel"             # custom-лобби («с другом»)
 const RANKED_MODE := "towerduel_ranked"     # ранговые лобби матчмейкинга
 
@@ -36,6 +38,9 @@ const STAT_MATCHES := "matches_played"
 const STAT_WINS_DEFENDER := "wins_defender"
 const STAT_UNITS_KILLED := "units_killed_total"
 const STAT_MMR := "MMR"
+## Добавлена позже (счётчик должен был быть симметричным): в Steamworks её
+## нужно завести тем же API-именем, иначе магазин молча проигнорирует вызов.
+const STAT_WINS_ATTACKER := "wins_attacker"
 
 # --- MMR и лиги.
 const MMR_DEFAULT := 1000
@@ -59,8 +64,6 @@ const LOBBY_DISTANCE_FILTER_WORLDWIDE := 3      # k_ELobbyDistanceFilter
 const LOBBY_COMPARE_EQUAL := 0                  # k_ELobbyComparisonEqual
 const LOBBY_COMPARE_LESS_OR_EQUAL := -2         # k_ELobbyComparisonEqualToOrLessThan
 const LOBBY_COMPARE_GREATER_OR_EQUAL := 2       # k_ELobbyComparisonEqualToOrGreaterThan
-
-enum MMPhase { IDLE, SEARCHING, HOSTING, COUNTDOWN }
 
 var steam: Object = null      # динамическая ссылка на синглтон GodotSteam
 var available := false        # GodotSteam установлен и Steam инициализирован

@@ -173,6 +173,55 @@ func base_hit() -> void:
 	tween.tween_property(_flash, "color:a", 0.0, 0.45)
 
 
+## Баннер события раунда в центре экрана: «ШТУРМ!», «РАУНД ЗА ЗАЩИТНИКОМ».
+## Короткий скейл + затухание, без блокировки ввода.
+@rpc("authority", "call_local", "reliable")
+func round_banner(text: String, color: Color) -> void:
+	var label := Label.new()
+	label.text = text
+	label.add_theme_font_size_override("font_size", 46)
+	label.add_theme_color_override("font_color", color)
+	label.add_theme_color_override("font_outline_color", Color(0.0, 0.02, 0.05, 0.92))
+	label.add_theme_constant_override("outline_size", 10)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	label.pivot_offset = Vector2(576.0, 200.0)
+	_overlay.add_child(label)
+	label.scale = Vector2(0.72, 0.72)
+	label.modulate = Color(1, 1, 1, 0)
+	var tween := label.create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(label, "scale", Vector2.ONE, 0.28).set_trans(Tween.TRANS_BACK) \
+			.set_ease(Tween.EASE_OUT)
+	tween.tween_property(label, "modulate", Color.WHITE, 0.18)
+	tween.chain().tween_interval(0.7)
+	tween.chain().tween_property(label, "modulate:a", 0.0, 0.4)
+	tween.chain().tween_callback(label.queue_free)
+
+
+## Короткая подпись у мировой точки (отказ постройки, «нет кредитов» и т.п.).
+@rpc("authority", "call_local", "reliable")
+func hint(world_pos: Vector2, text: String, color: Color) -> void:
+	var label := Label.new()
+	label.text = text
+	label.add_theme_font_size_override("font_size", 13)
+	label.add_theme_color_override("font_color", color)
+	label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	label.add_theme_constant_override("outline_size", 4)
+	label.position = world_pos + Vector2(-70.0, -34.0)
+	label.custom_minimum_size = Vector2(140.0, 0.0)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_world.add_child(label)
+	var tween := label.create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(label, "position:y", label.position.y - 26.0, 0.9) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tween.tween_property(label, "modulate:a", 0.0, 0.9)
+	tween.chain().tween_callback(label.queue_free)
+
+
 # ---------------------------------------------------------- Внутреннее ------
 
 ## Всплывающий круг/кольцо с искрами; анимируем scale/modulate извне.

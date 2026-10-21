@@ -67,27 +67,80 @@ func _physics_process(delta: float) -> void:
 		_shoot(aim_angle)
 
 
-## Целимся в юнита, который дальше всех зашёл по пути (и досягаем для башни).
-## Одинаково на обоих пирах.
+## Выбор цели по роли башни (COMBAT v2, SPEC-02).
+##
+## Раньше ВСЕ башни били «самого продвинутого» юнита: четыре снайпера
+## вкладывали весь залп в один труп, а огнемёт тратил его на танка. Теперь
+## приоритет задаётся полем priority в GameDB:
+##   strongest — максимальный HP (снайпер: снимает тяжёлых);
+##   weakest   — минимальный HP (огнемёт: добивает, не перекидывая урон);
+##   densest   — больше соседей в радиусе цепи (тесла);
+##   cluster   — больше соседей в радиусе сплеша (мортира);
+##   progress  — самый продвинутый (криостан: контроль лидера).
+## При равенстве выигрывает тот, кто дальше прошёл. Поиск одинаков на обоих
+## пирах, поэтому картинка атаки совпадает без трафика.
+## Может ли эта башня стрелять по этому юниту (воздух/земля).
+## Раньше проверялся только воздух — и «мортира» через цепь теслы могла
+## задеть летающих, а зенитка без ограничения била и по земле.
+func _can_target(unit: Unit) -> bool:
+	var flying := bool(unit.stats.get("flying", false))
+	if flying:
+		return bool(stats.get("can_target_flying", true))
+	return bool(stats.get("can_target_ground", true))
+
+
 func _update_target() -> void:
 	var best: Unit = null
+	var best_score := -INF
 	var best_progress := -1.0
 	for node in get_tree().get_nodes_in_group("units"):
 		var unit := node as Unit
 		if unit == null or unit.is_dead:
 			continue
-		if unit.stats["flying"] and not stats["can_target_flying"]:
+		if not _can_target(unit):
 			continue
 		if global_position.distance_to(unit.global_position) > stats["range"]:
 			continue
-		if unit.progress_ratio > best_progress:
+		var score := _target_score(unit)
+		if score > best_score or (score == best_score and unit.progress_ratio > best_progress):
+			best_score = score
 			best_progress = unit.progress_ratio
 			best = unit
 	_target = best
 
 
+## Оценка цели под роль башни. Единицы — «очки предпочтения», не урон.
+func _target_score(unit: Unit) -> float:
+	match String(stats.get("priority", "progress")):
+		"strongest":
+			return unit.hp
+		"weakest":
+			return -unit.hp
+		"densest":
+			return float(_neighbors_near(unit.global_position,
+					float(stats.get("chain_range", 120.0))))
+		"cluster":
+			return float(_neighbors_near(unit.global_position,
+					float(stats.get("splash_radius", 90.0))))
+		_:
+			return unit.progress_ratio * 1000.0
+
+
+## Сколько живых юнитов (кроме самого «центрального») рядом с точкой.
+func _neighbors_near(point: Vector2, radius: float) -> int:
+	var count := 0
+	for node in get_tree().get_nodes_in_group("units"):
+		var other := node as Unit
+		if other == null or other.is_dead:
+			continue
+		if other.global_position.distance_to(point) <= radius:
+			count += 1
+	return maxi(count - 1, 0)
+
+
 func _shoot(aim_angle: float) -> void:
-	_cooldown = 1.0 / float(stats["fire_rate"])
+	# Оверклок Защитника (способность раунда) ускоряет перезарядку.
+	_cooldown = 1.0 / (float(stats["fire_rate"]) * GameState.fire_rate_multiplier())
 	var muzzle := global_position + Vector2.from_angle(aim_angle) * BODY_RADIUS
 	_play_recoil(aim_angle)
 	var kind := String(stats.get("kind", "bullet"))
@@ -98,7 +151,8 @@ func _shoot(aim_angle: float) -> void:
 			# Хитскан: урон и эффекты — только сервер. Клиент увидит луч,
 			# когда сервер разошлёт FXManager.beam (call_local RPC).
 			if multiplayer.is_server():
-				_target.take_damage(damage_of())
+				_target.take_damage(damage_of(), FXManager.DMG_NORMAL,
+						String(stats.get("damage_type", "")))
 				FXManager.beam.rpc(muzzle, _target.global_position, stats["color"])
 		"chain":
 			# Тесла: разряд по цепочке целей. Урон — сервер, картинка — RPC.
@@ -153,7 +207,8 @@ func _spawn_muzzle_flash(muzzle: Vector2, aim_angle: float) -> void:
 ## ОТ ПОСЛЕДНЕЙ цели (молния «перескакивает»).
 func _chain_shot(muzzle: Vector2) -> void:
 	var points := PackedVector2Array([muzzle, _target.global_position])
-	_target.take_damage(damage_of())
+	var damage_type := String(stats.get("damage_type", ""))
+	_target.take_damage(damage_of(), FXManager.DMG_NORMAL, damage_type)
 	var linked: Array[Unit] = [_target]
 	var hop_damage := damage_of()
 	for _i in int(stats.get("chain_targets", 2)):
@@ -162,7 +217,7 @@ func _chain_shot(muzzle: Vector2) -> void:
 			break
 		linked.append(link)
 		hop_damage *= float(stats.get("chain_falloff", 0.6))
-		link.take_damage(hop_damage)
+		link.take_damage(hop_damage, FXManager.DMG_NORMAL, damage_type)
 		points.append(link.global_position)
 	FXManager.chain.rpc(points, stats["color"])
 
@@ -173,6 +228,9 @@ func _find_chain_link(from: Unit, exclude: Array[Unit]) -> Unit:
 	for node in get_tree().get_nodes_in_group("units"):
 		var unit := node as Unit
 		if unit == null or unit.is_dead or exclude.has(unit):
+			continue
+		# Цепь не перескакивает на класс, который башня в принципе не бьёт.
+		if not _can_target(unit):
 			continue
 		var dist := from.global_position.distance_to(unit.global_position)
 		if dist <= best_dist:

@@ -108,6 +108,13 @@ func _open_settings() -> void:
 	dialog.tree_exited.connect(func() -> void: _settings_open = false)
 
 
+## Выход из матча = поражение (чеклист приёмки D). Без этого игрок мог
+## «избежать» проигрыша, просто закрыв матч, — и статистика врала.
 func _leave_match() -> void:
+	if not GameState.game_over:
+		if multiplayer.is_server():
+			GameState.surrender(multiplayer.get_unique_id())
+		else:
+			GameState.request_surrender.rpc_id(1)
 	NetworkManager.end_session()
 	get_tree().change_scene_to_file("res://scenes/main_menu.tscn")

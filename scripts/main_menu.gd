@@ -62,6 +62,7 @@ func _ready() -> void:
 	_build_utility_buttons()
 	_connect_signals()
 	_style_primary_action()
+	_add_training_button()
 	for item in find_children("*", "Button", true, false):
 		_wire_button_feedback(item as Button)
 	_setup_profile_bar()
@@ -262,6 +263,40 @@ func _style_primary_action() -> void:
 	play_btn.add_theme_stylebox_override("hover", hover)
 	play_btn.add_theme_stylebox_override("pressed", pressed)
 	play_btn.add_theme_stylebox_override("focus", hover)
+
+
+## «ТРЕНИРОВКА» — соло-матч против бота. Главный вход для нового игрока:
+## не требует Steam, сети и второго человека, запускается за один клик и
+## показывает подсказки первого матча (TrainingTips).
+func _add_training_button() -> void:
+	var button := Button.new()
+	button.name = "TrainingBtn"
+	button.text = "🎓   ТРЕНИРОВКА  ·  ПРОТИВ БОТА"
+	button.custom_minimum_size = Vector2(0.0, 46.0)
+	button.focus_mode = Control.FOCUS_ALL
+	button.add_theme_font_size_override("font_size", 16)
+	button.add_theme_color_override("font_color", UISkin.CYAN)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.02, 0.08, 0.11, 0.92)
+	style.border_color = Color(UISkin.CYAN, 0.45)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(9)
+	button.add_theme_stylebox_override("normal", style)
+	var hover := style.duplicate() as StyleBoxFlat
+	hover.bg_color = Color(0.04, 0.14, 0.18, 0.96)
+	hover.border_color = Color(UISkin.CYAN, 0.9)
+	button.add_theme_stylebox_override("hover", hover)
+	button.add_theme_stylebox_override("focus", hover)
+	button.pressed.connect(_on_training_pressed)
+	play_btn.add_sibling(button)   # сразу под «В БОЙ», в той же колонке
+	_wire_button_feedback(button)
+	button.tooltip_text = "Соло-матч 1×1 против ИИ. Подсказки включаются автоматически."
+
+
+func _on_training_pressed() -> void:
+	AudioManager.play_sfx("click")
+	search_status.text = "Запускаем тренировку против бота…"
+	NetworkManager.start_solo()
 
 
 func _wire_button_feedback(button: Button) -> void:
@@ -494,7 +529,9 @@ func _build_loadout_cards() -> void:
 	loadout_status.add_theme_font_size_override("font_size", 10)
 	_refresh_deck_headers()
 	if loadout_status.text.strip_edges().is_empty():
-		loadout_status.text = "Наведите курсор на карту, чтобы увидеть характеристики."
+		loadout_status.text = ("Наведите курсор на карту, чтобы увидеть характеристики."
+				+ "  ·  В бою каждую башню можно поставить %d раза."
+				% GameDB.MAX_TOWERS_PER_TYPE)
 
 
 func _make_card(id: String, which: String) -> Button:
@@ -608,8 +645,12 @@ func _card_text(_id: String, stats: Dictionary) -> String:
 				"chain": "цепь", "flame": "огонь"}
 		lines.append("урон %s  ·  %s/с  ·  %s" % [str(stats["damage"]),
 				stats["fire_rate"], kind_names.get(stats["kind"], "-")])
-		lines.append("радиус %s%s" % [stats["range"],
-				"" if stats["can_target_flying"] else " · только земля"])
+		var targets := "универсал"
+		if not stats["can_target_flying"]:
+			targets = "только земля"
+		elif not bool(stats.get("can_target_ground", true)):
+			targets = "только воздух"
+		lines.append("радиус %s · %s" % [stats["range"], targets])
 	else:                       # юнит
 		lines.append(stats["name"] + "  ·  " + str(stats["cost"]) + " зол.")
 		lines.append("HP %s  ·  скор. %s  ·  базе %s" % [stats["hp"],
@@ -639,8 +680,12 @@ func _on_card_toggled(which: String, id: String, card: Button, pressed: bool) ->
 
 
 func _refresh_deck_headers() -> void:
-	tower_header.text = "БАШНИ ЗАЩИТНИКА  ·  %d/%d" % [LoadoutManager.towers.size(),
-			LoadoutManager.DECK_SIZE]
+	# Лимит «2 на тип» виден ещё в меню: иначе игрок узнаёт о нём только
+	# по красной подписи на поле и считает это багом.
+	tower_header.text = "БАШНИ ЗАЩИТНИКА  ·  %d/%d  ·  до %d построек" % [
+		LoadoutManager.towers.size(), LoadoutManager.DECK_SIZE,
+		LoadoutManager.tower_capacity(),
+	]
 	unit_header.text = "ЮНИТЫ ШТУРМОВИКА  ·  %d/%d" % [LoadoutManager.units.size(),
 			LoadoutManager.DECK_SIZE]
 	tower_header.add_theme_color_override("font_color", UISkin.CYAN)
