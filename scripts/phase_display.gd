@@ -3,9 +3,10 @@ extends Control
 ## Компактный индикатор фазы раунда для верхней панели HUD.
 ##
 ## Показывает:
-##   * ПОДГОТОВКА — «РАУНД 2/3 · 1:1» + таймер до штурма (янтарный);
-##   * ШТУРМ      — таймер до конца раунда (cyan, последние 10 с — красный);
-##   * ИТОГ       — таймер до следующего раунда (янтарный).
+##   * ПОДГОТОВКА — «РАУНД 2/3 · 1:1» + таймер до штурма (янтарный, 10 с);
+##   * ШТУРМ      — таймер ОКНА СПАВНА (cyan, последние 10 с — красный);
+##   * ДОБИВАНИЕ  — окно спавна закрыто, ждём, пока дойдёт последний юнит.
+## Паузы «ИТОГ» больше нет: раунд заканчивается сразу, как опустело поле.
 ##
 ## СЕТЕВАЯ МОДЕЛЬ: сервер присылает границы фаз (GameState.phase_changed),
 ## между ними каждый пир считает время локально. Расхождение возможно только
@@ -28,8 +29,8 @@ const WARNING_SECONDS := 10.0
 
 var _round := 1
 var _phase := GameState.Phase.PLANNING
-var _time_left := 12.0
-var _phase_total := 12.0
+var _time_left := 10.0
+var _phase_total := 10.0
 var _shown_second := -1
 var _finished := false
 
@@ -169,23 +170,20 @@ func _style(bg: Color, border: Color, width: int, radius: int) -> StyleBoxFlat:
 # ----------------------------------------------------------- Логика фаз ------
 
 func _duration_of(phase: int) -> float:
-	match phase:
-		GameState.Phase.ASSAULT:
-			return GameState.ASSAULT_TIME
-		GameState.Phase.REVIEW:
-			return GameState.REVIEW_TIME
-		_:
-			return GameState.PLANNING_TIME
+	if phase == GameState.Phase.ASSAULT:
+		return GameState.SPAWN_WINDOW
+	return GameState.PLANNING_TIME
 
 
+## Подпись фазы. У штурма два состояния: открытое окно спавна и добивание.
 func _phase_name(phase: int) -> String:
-	match phase:
-		GameState.Phase.ASSAULT:
-			return "ШТУРМ"
-		GameState.Phase.REVIEW:
-			return "ИТОГ"
-		_:
-			return "ПОДГОТОВКА"
+	if phase == GameState.Phase.ASSAULT:
+		return "СПАВН" if _spawn_open() else "ДОБИВАНИЕ"
+	return "ПОДГОТОВКА"
+
+
+func _spawn_open() -> bool:
+	return GameState.spawn_window_open() and _time_left > 0.0
 
 
 func _on_phase_changed(round_index: int, phase: int, duration: float) -> void:
@@ -215,18 +213,21 @@ func _update_display(force := false) -> void:
 	_shown_second = seconds
 
 	var tint := CYAN
-	match _phase:
-		GameState.Phase.ASSAULT:
-			tint = RED if _time_left <= WARNING_SECONDS else CYAN
-		GameState.Phase.REVIEW:
+	if _phase == GameState.Phase.ASSAULT:
+		if not _spawn_open():
 			tint = GREEN
-		_:
-			tint = AMBER
+		else:
+			tint = RED if _time_left <= WARNING_SECONDS else CYAN
+	else:
+		tint = AMBER
 	_phase_label.text = "РАУНД %d/%d · %d:%d" % [
 		_round, GameState.MAX_ROUNDS, GameState.defender_wins, GameState.attacker_wins,
 	]
 	_phase_label.add_theme_color_override("font_color", Color(MUTED, 1.0))
-	_time_label.text = "%s %ds" % [_phase_name(_phase), seconds]
+	if _phase == GameState.Phase.ASSAULT and not _spawn_open():
+		_time_label.text = "ДОБИВАНИЕ"
+	else:
+		_time_label.text = "%s %ds" % [_phase_name(_phase), seconds]
 	_time_label.add_theme_color_override("font_color", tint)
 	_accent.color = tint
 	_bar_fill.bg_color = tint
@@ -236,6 +237,7 @@ func _update_display(force := false) -> void:
 func _update_bar() -> void:
 	if _bar == null:
 		return
+	# В добивании таймера нет — полоса гаснет, чтобы не обещать обратный отсчёт.
 	_bar.value = clampf(_time_left / maxf(_phase_total, 1.0), 0.0, 1.0) * 100.0
 
 

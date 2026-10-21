@@ -11,7 +11,7 @@ extends Node
 ##   * много снайперов  -> дешёвая толпа (снайпер бьёт по одной цели);
 ##   * много мортир     -> летающие (сплеш не бьёт воздух);
 ##   * много криостана  -> тяжёлые (замедление не окупается против HP);
-##   * много огнемётов  -> танки (огонь по тяжёлой броне ×0,6);
+##   * много огнемётов  -> танки (огонь по тяжёлой броне ×0,8);
 ##   * много теслы      -> одиночные тяжёлые (цепь ищет скопления).
 ## Это ровно та матрица, которую игрок изучает в первом матче.
 ##
@@ -19,13 +19,17 @@ extends Node
 ## покупка идёт через тот же серверный путь, что и у человека, — читов нет.
 
 ## Пауза между решениями: имитация «человеческого» темпа и защита от спама.
-const THINK_INTERVAL := 0.9
+## 0,55 с — человек с «зажатой» кнопкой покупает ещё быстрее (10/с), так что
+## бот не должен казаться медленнее интерфейса.
+const THINK_INTERVAL := 0.55
 ## Вероятность «задуматься и не купить» в этот тик (лёгкая тупость).
 const SKIP_CHANCE := 0.12
 ## Не копить больше этого: иначе бот копил бы на босса весь матч.
 const MAX_HOARD := 170
 ## Максимум юнитов в очереди, который бот держит сам (не весь лимит).
-const BOT_QUEUE_CAP := 8
+const BOT_QUEUE_CAP := 14
+## С какого остатка бот начинает вкладываться в уровни юнитов.
+const UPGRADE_RESERVE := 150
 
 ## Базовые веса по типам: дешёвая толпа — основа, босс — редкий «сюрприз».
 const BASE_WEIGHTS := {
@@ -54,8 +58,7 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	if GameState.game_over or _spawner == null:
 		return
-	if GameState.round_phase == GameState.Phase.REVIEW \
-			or GameState.round_phase == GameState.Phase.FINISHED:
+	if GameState.round_phase == GameState.Phase.FINISHED:
 		return
 	_think -= delta
 	if _think > 0.0:
@@ -80,15 +83,43 @@ func _think_once() -> void:
 		return
 	if randf() < SKIP_CHANCE:
 		return
+	# Свободные кредиты бот вкладывает «в высоту»: уровень типа юнита
+	# переживает раунды, поэтому это выгоднее ещё одной пачки тел.
+	if gold >= UPGRADE_RESERVE and _maybe_upgrade(peer, gold):
+		return
 	var unit_id := _pick_unit(gold)
 	if unit_id == "":
 		return
 	var cost := int(GameDB.UNITS[unit_id]["cost"])
-	# Формация выгодна по темпу: пять тел выходят подряд, а не по одному.
-	if unit_id == "fast" and gold >= cost * _spawner.wave_size + 20:
-		_spawner._server_enqueue(peer, unit_id, _spawner.wave_size)
-	else:
-		_spawner._server_enqueue(peer, unit_id, 1)
+	# Покупаем пачкой, пока хватает денег и места: это компенсирует то, что
+	# бот «думает» реже, чем игрок жмёт кнопку.
+	var room: int = UnitSpawner.MAX_QUEUE - _spawner.queue_size()
+	var wanted := mini(mini(gold / cost, 4), room)
+	_spawner._server_enqueue(peer, unit_id, maxi(wanted, 1))
+
+
+## Покупка уровня юнита. Качаем самый дешёвый доступный тип из деки —
+## так бот быстрее доходит до заметного прироста и не копит на «босса».
+func _maybe_upgrade(peer: int, gold: int) -> bool:
+	var best := ""
+	var best_cost := 1 << 30
+	for unit_id in GameState.attacker_units:
+		if not GameDB.UNITS.has(unit_id):
+			continue
+		var level := GameState.unit_level(unit_id)
+		if level >= GameDB.UNIT_MAX_LEVEL:
+			continue
+		var cost := GameDB.unit_upgrade_cost(unit_id, level)
+		if cost < best_cost:
+			best_cost = cost
+			best = String(unit_id)
+	if best == "" or best_cost > gold - 40:
+		return false
+	# Не каждый тик: иначе бот выкупает уровни раньше, чем набирает армию.
+	if randf() < 0.45:
+		return false
+	GameState.apply_unit_upgrade(peer, best)
+	return true
 
 
 ## «ПРОРЫВ» бот жмёт, когда очередь почти полна: залп всей армией —

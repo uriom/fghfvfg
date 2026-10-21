@@ -29,16 +29,16 @@ const STEPS := [
 				+ "Снайпер бьёт дальше всех — начни с него.",
 	},
 	{
-		"id": "limit",
+		"id": "upgrade",
 		"when": "_need_second_tower",
-		"text": "Каждой башни можно поставить не больше 2 штук. "
-				+ "Снайпер — танки, мортира — толпу, тесла — воздух.",
+		"text": "Лимита на башни нет. Клик по уже построенной башне покупает "
+				+ "ей уровень — до 10-го: больше урона, дальности и скорострельности.",
 	},
 	{
 		"id": "assault",
 		"when": "_assault_started",
-		"text": "ШТУРМ! Ты не строишь в бою — держи базу до конца раунда (60 с). "
-				+ "Башни переживут раунд и останутся в следующем.",
+		"text": "ШТУРМ! У штурмовика 30 секунд, чтобы выкупить армию. "
+				+ "Потом — только добивание: держи базу, пока не дойдёт последний.",
 	},
 	{
 		"id": "air",
@@ -55,8 +55,8 @@ const STEPS := [
 	{
 		"id": "rounds",
 		"when": "_two_rounds_played",
-		"text": "Матч до 2 побед из 3 раундов. Бюджет Защитника падает, "
-				+ "атакующего растёт — третий раунд решает всё.",
+		"text": "Матч до 2 побед из 3 раундов. Башни и уровни переживают раунды, "
+				+ "кредиты тоже — к третьему раунду копится решающий апгрейд.",
 	},
 ]
 
@@ -234,9 +234,9 @@ func _need_second_tower() -> bool:
 
 
 func _assault_started() -> bool:
-	return GameState.phase_time_left > 0.0 and GameState.is_assault() \
+	return GameState.is_assault() and GameState.spawn_open \
 			and GameState.stats.get("rounds_played", 0) == 0 \
-			and GameState.phase_time_left > GameState.ASSAULT_TIME - 4.0
+			and GameState.spawn_window_left > GameState.SPAWN_WINDOW - 4.0
 
 
 func _need_air_hint() -> bool:

@@ -124,8 +124,8 @@ func _run_host() -> void:
 	GameState.finish_round_by_timeout()
 	await _sleep(0.3)
 	_check(GameState.defender_wins == 1, "раунд 1 за защитником")
-	_check(GameState.round_phase == GameState.Phase.REVIEW, "фаза ИТОГ")
-	GameState.tick_phase(GameState.REVIEW_TIME + 0.1)
+	# Паузы «ИТОГ» больше нет: следующий раунд начинается сразу.
+	GameState.tick_phase(0.1)
 	await _sleep(0.4)
 	_check(GameState.round_index == 2, "начался раунд 2")
 	_check(GameState.base_hp == GameState.ROUND_BASE_HP, "HP базы сброшено")

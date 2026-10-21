@@ -1,8 +1,15 @@
 extends Control
 ## HUD Штурмовика: статус в верхней полосе, выбор юнитов — в нижней.
 ## Центр экрана остаётся свободен для дороги, башен и тактического поля.
+##
+## ЭТАП 7: вместо кнопки «ВОЛНА ×5» — большая кнопка «ДЕРЖАТЬ»: одно нажатие
+## покупает юнита, удержание покупает их подряд (10 раз в секунду), пока
+## хватает кредитов. Рядом — кнопка уровня типа юнита (1..10).
 
 const PHASE_DISPLAY_SCRIPT := preload("res://scripts/phase_display.gd")
+## Удержание кнопки: первый юнит сразу, дальше — с этим интервалом.
+const HOLD_INTERVAL := 0.10
+const HOLD_FIRST_DELAY := 0.22
 const BAR_HEIGHT := 64.0
 const DOCK_HEIGHT := 150.0
 const DOCK_MAX_WIDTH := 820.0
@@ -24,6 +31,9 @@ var _hp_bar: ProgressBar
 var _unit_dock: PanelContainer
 var _unit_cards: HBoxContainer
 var _last_gold := -1
+## Тип юнита, кнопку которого сейчас держат ("" — не держат).
+var _hold_unit := ""
+var _hold_clock := 0.0
 
 
 func _ready() -> void:
@@ -39,6 +49,7 @@ func _ready() -> void:
 	_refresh_status()
 	rebuild_from_deck()
 	GameState.phase_changed.connect(_on_phase_changed)
+	GameState.unit_level_changed.connect(_on_unit_level_changed)
 	_refresh_card_states()
 
 
@@ -218,7 +229,7 @@ func rebuild_from_deck() -> void:
 	for unit_id in GameState.attacker_units:
 		if not GameDB.UNITS.has(unit_id):
 			continue
-		var card := _create_unit_card(String(unit_id), GameDB.UNITS[unit_id])
+		var card := _create_unit_card(String(unit_id), GameState.unit_stats(unit_id))
 		_unit_cards.add_child(card)
 		_cards_by_unit[String(unit_id)] = card
 
@@ -266,8 +277,10 @@ func _create_unit_card(unit_id: String, stats: Dictionary) -> Control:
 	labels.add_theme_constant_override("separation", 0)
 	labels.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	info_row.add_child(labels)
+	var level := GameState.unit_level(unit_id)
 	var title := _label(
-		"%s  ·  %d зол." % [String(stats["name"]).to_upper(), int(stats["cost"])], 11, TEXT, 1
+		"%s · УР %d · %d кр." % [String(stats["name"]).to_upper(), level,
+				int(stats["cost"])], 11, TEXT, 1
 	)
 	title.clip_text = true
 	labels.add_child(title)
@@ -280,11 +293,14 @@ func _create_unit_card(unit_id: String, stats: Dictionary) -> Control:
 	details.clip_text = true
 	labels.add_child(details)
 	card.tooltip_text = (
-		"%s — %d кр.\nHP: %d · Урон базе: %d%s"
+		"%s — %d кр., уровень %d/%d\nHP: %d · Скорость: %d · Урон базе: %d%s"
 		% [
 			String(stats["name"]),
 			int(stats["cost"]),
+			level,
+			GameDB.UNIT_MAX_LEVEL,
 			int(stats["hp"]),
+			int(stats["speed"]),
 			int(stats["damage"]),
 			_trait_long(stats)
 		]
@@ -293,25 +309,30 @@ func _create_unit_card(unit_id: String, stats: Dictionary) -> Control:
 	var buttons := HBoxContainer.new()
 	buttons.add_theme_constant_override("separation", 5)
 	content.add_child(buttons)
-	var send_one := Button.new()
-	send_one.text = "ОДИН"
-	send_one.add_theme_font_size_override("font_size", 12)
-	send_one.custom_minimum_size = Vector2(0.0, 28.0)
-	send_one.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	send_one.pressed.connect(_on_send_one.bind(unit_id))
-	buttons.add_child(send_one)
-	var send_wave := Button.new()
-	var wave_size := _unit_spawner.wave_size if _unit_spawner != null else 5
-	send_wave.text = "ВОЛНА ×%d" % wave_size
-	send_wave.add_theme_font_size_override("font_size", 12)
-	send_wave.custom_minimum_size = Vector2(0.0, 28.0)
-	send_wave.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	send_wave.pressed.connect(_on_send_wave.bind(unit_id))
-	buttons.add_child(send_wave)
+	# Главная кнопка: клик — один юнит, удержание — поток юнитов.
+	var send_hold := Button.new()
+	send_hold.text = "ДЕРЖАТЬ"
+	send_hold.tooltip_text = "Клик — один юнит. Зажми — поток, пока хватает кредитов."
+	send_hold.add_theme_font_size_override("font_size", 12)
+	send_hold.custom_minimum_size = Vector2(0.0, 28.0)
+	send_hold.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	send_hold.focus_mode = Control.FOCUS_NONE
+	send_hold.button_down.connect(_on_hold_started.bind(unit_id))
+	send_hold.button_up.connect(_on_hold_stopped)
+	send_hold.pressed.connect(_on_hold_click.bind(unit_id))
+	buttons.add_child(send_hold)
+	# Уровень типа юнита: 1..10. Кнопка покупает следующий уровень.
+	var upgrade := Button.new()
+	upgrade.add_theme_font_size_override("font_size", 10)
+	upgrade.custom_minimum_size = Vector2(74.0, 28.0)
+	upgrade.focus_mode = Control.FOCUS_NONE
+	upgrade.pressed.connect(_on_unit_upgrade.bind(unit_id))
+	buttons.add_child(upgrade)
 	card.set_meta("unit_id", unit_id)
-	card.set_meta("send_one", send_one)
-	card.set_meta("send_wave", send_wave)
+	card.set_meta("send_hold", send_hold)
+	card.set_meta("upgrade", upgrade)
 	card.set_meta("title", title)
+	card.set_meta("details", details)
 	return card
 
 
@@ -354,32 +375,65 @@ func _meter_style(fill: Color) -> StyleBoxFlat:
 	return style
 
 
-## Покупка одного юнита. Деньги списывает СЕРВЕР (в спавнере), а HUD
-## заранее гасит кнопку, чтобы клик не уходил в пустоту.
-func _on_send_one(unit_id: String) -> void:
+## Нажатие «ДЕРЖАТЬ»: один юнит сразу и запуск потока, пока кнопку держат.
+## Автоповтор живёт в _process, чтобы темп не зависел от частоты нажатий мыши.
+func _on_hold_started(unit_id: String) -> void:
+	_hold_unit = unit_id
+	_hold_clock = HOLD_FIRST_DELAY
+	_buy_one(unit_id, true)
+
+
+func _on_hold_stopped() -> void:
+	_hold_unit = ""
+	_hold_clock = 0.0
+
+
+## Короткий клик тоже приходит как pressed (после button_up) — не покупаем
+## второго юнита: кнопка уже купила одного на button_down.
+func _on_hold_click(_unit_id: String) -> void:
+	pass
+
+
+## Покупка одного юнита: деньги списывает СЕРВЕР (в спавнере), HUD только
+## не даёт клику уйти в пустоту.
+func _buy_one(unit_id: String, audible: bool) -> void:
 	if _unit_spawner == null:
 		return
 	if not _can_afford(unit_id, 1):
-		_deny()
+		if audible:
+			_deny()
+		_stop_hold_if_empty()
 		return
-	AudioManager.play_sfx("click", -7.0, 1.2)
+	if audible:
+		AudioManager.play_sfx("click", -7.0, 1.2)
 	_unit_spawner.enqueue_unit(unit_id, 1)
 
 
-## Покупка формации ×N: очередь получает сразу N юнитов.
-func _on_send_wave(unit_id: String) -> void:
-	if _unit_spawner == null:
-		return
-	var size := _unit_spawner.wave_size
-	if not _can_afford(unit_id, size):
-		_deny()
-		return
-	AudioManager.play_sfx("click", -4.0, 0.82)
-	_unit_spawner.enqueue_unit(unit_id, size)
+## Если кредиты кончились — поток останавливаем, но кнопку не отпускаем:
+## игрок увидит, что покупать больше нечего.
+func _stop_hold_if_empty() -> void:
+	_hold_clock = HOLD_INTERVAL
 
 
 func _deny() -> void:
 	AudioManager.play_sfx("deny", -6.0)
+
+
+## Покупка следующего уровня типа юнита (переживает раунды).
+func _on_unit_upgrade(unit_id: String) -> void:
+	var level := GameState.unit_level(unit_id)
+	if level >= GameDB.UNIT_MAX_LEVEL or GameState.game_over:
+		_deny()
+		return
+	var cost := GameDB.unit_upgrade_cost(unit_id, level)
+	if int(GameState.gold.get(multiplayer.get_unique_id(), 0)) < cost:
+		_deny()
+		return
+	AudioManager.play_sfx("ability", -6.0, 1.1)
+	if multiplayer.is_server():
+		GameState.apply_unit_upgrade(multiplayer.get_unique_id(), unit_id)
+	else:
+		GameState.request_unit_upgrade.rpc_id(1, unit_id)
 
 
 ## Хватает ли кредитов на count юнитов и не переполнена ли очередь.
@@ -404,12 +458,11 @@ func _refresh_card_states() -> void:
 		if not is_instance_valid(card):
 			continue
 		var cost := int(GameDB.UNITS[unit_id]["cost"])
-		var size := _unit_spawner.wave_size if _unit_spawner != null else 5
-		var one_ok := gold >= cost and queue + 1 <= UnitSpawner.MAX_QUEUE
-		var wave_ok := gold >= cost * size and queue + size <= UnitSpawner.MAX_QUEUE
-		(card.get_meta("send_one") as Button).disabled = not one_ok
-		(card.get_meta("send_wave") as Button).disabled = not wave_ok
+		var one_ok := gold >= cost and queue < UnitSpawner.MAX_QUEUE \
+				and GameState.can_buy_units()
+		(card.get_meta("send_hold") as Button).disabled = not one_ok
 		card.modulate = Color.WHITE if one_ok else Color(0.62, 0.66, 0.72)
+		_refresh_upgrade_button(card, unit_id, gold)
 	if _queue_label != null:
 		_queue_label.text = "ОЧЕРЕДЬ %d / %d" % [queue, UnitSpawner.MAX_QUEUE]
 		_queue_label.add_theme_color_override("font_color",
@@ -417,12 +470,55 @@ func _refresh_card_states() -> void:
 	_refresh_breakthrough()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	_tick_hold(delta)
 	_refresh_card_states()
+
+
+## Автоповтор «зажатой» кнопки. Покупаем только когда есть деньги и место в
+## очереди; сервер всё равно проверяет каждую покупку.
+func _tick_hold(delta: float) -> void:
+	if _hold_unit == "":
+		return
+	if not GameState.can_buy_units():
+		_hold_unit = ""
+		return
+	_hold_clock -= delta
+	if _hold_clock > 0.0:
+		return
+	_hold_clock = HOLD_INTERVAL
+	_buy_one(_hold_unit, false)
+
+
+## Кнопка уровня: «УР 3 → 4 · 33 кр.» либо «УР 10 · МАКС».
+func _refresh_upgrade_button(card: PanelContainer, unit_id: String, gold: int) -> void:
+	var button := card.get_meta("upgrade") as Button
+	if button == null:
+		return
+	var level := GameState.unit_level(unit_id)
+	if level >= GameDB.UNIT_MAX_LEVEL:
+		button.text = "УР %d · МАКС" % level
+		button.disabled = true
+		button.modulate = Color(0.75, 0.8, 0.86)
+		return
+	var cost := GameDB.unit_upgrade_cost(unit_id, level)
+	button.text = "УР %d → %d" % [level, level + 1]
+	button.tooltip_text = ("Улучшить весь тип «%s»: +HP и скорость, "
+			+ "на 10-м — +1 урон базе. %d кр.") % [
+		String(GameDB.UNITS[unit_id]["name"]), cost]
+	button.disabled = gold < cost or GameState.game_over
+	button.modulate = Color.WHITE if gold >= cost else Color(0.6, 0.65, 0.72)
 
 
 func _on_phase_changed(_round_index: int, _phase: int, _duration: float) -> void:
 	_refresh_card_states()
+
+
+## Уровень куплен (сервер подтвердил) — перерисовываем карточки: в них
+## записаны HP/урон/скорость именно этого уровня.
+func _on_unit_level_changed(_unit_id: String, _level: int) -> void:
+	_hold_unit = ""
+	rebuild_from_deck()
 
 
 ## «ПРОРЫВ»: сервер проверит фазу и «один раз за раунд».

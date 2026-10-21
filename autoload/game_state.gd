@@ -1,12 +1,14 @@
+# gdlint: ignore=max-public-methods
 extends Node
 ## Автозагрузка «GameState»: единственный источник истины по золоту, HP базы,
 ## фазам раунда, статистике матча и победе.
 ##
-## ЭТАП 6 — ROUND-BASED SIEGE (docs/GDD_AUDIT_RU.md, SPEC-01).
-## Матч больше не «10 минут до таймера»: это BO3 из раундов
-##   ПОДГОТОВКА (12 с) -> ШТУРМ (60 с) -> ИТОГ (8 с).
+## ЭТАП 7 — FAST SIEGE (после плейтеста):
+##   ПОДГОТОВКА (10 с) -> ШТУРМ (окно спавна 30 с + добивание) -> сразу
+##   следующая подготовка. Паузы «ИТОГ» больше нет: раунд заканчивается в
+##   тот кадр, когда поле опустело или база пала.
 ## Раунд выигрывает Штурмовик, если снёс базу; иначе — Защитник.
-## Башни переживают раунды (это и есть «осада»), HP базы сбрасывается.
+## Башни и купленные уровни переживают раунды, HP базы сбрасывается.
 ## Матч заканчивается, когда кто-то взял 2 раунда (максимум 3).
 ##
 ## Правило синхронизации: НИКТО не меняет gold/base_hp напрямую.
@@ -25,8 +27,9 @@ signal phase_changed(round_index: int, phase: int, duration: float)
 signal round_ended(round_index: int, attacker_won: bool,
 		defender_wins: int, attacker_wins: int)
 signal ability_used(ability: String)
+signal unit_level_changed(unit_id: String, level: int)
 
-enum Phase { PLANNING, ASSAULT, REVIEW, FINISHED }
+enum Phase { PLANNING, ASSAULT, FINISHED }
 enum Ability { REPAIR, OVERCLOCK, BREAKTHROUGH }
 
 const ROUNDS_TO_WIN := 2
@@ -35,23 +38,25 @@ const ROUND_BASE_HP := 15
 ## Совместимость: старые HUD/тесты читали BASE_MAX_HP. Теперь это HP раунда.
 const BASE_MAX_HP := ROUND_BASE_HP
 
-const PLANNING_TIME := 12.0
-const ASSAULT_TIME := 60.0
-const REVIEW_TIME := 8.0
+const PLANNING_TIME := 10.0
+## Окно спавна: 30 с штурмовик может покупать и выпускать юнитов. Дальше —
+## только ожидание, пока последний юнит не дойдёт или не умрёт.
+const SPAWN_WINDOW := 30.0
+## Жёсткий предохранитель на «добивание»: если юнит застрял (баг/сеть),
+## раунд не должен длиться вечно.
+const ASSAULT_MAX_TIME := 75.0
+## Сколько секунд пустого поля нужно, чтобы засчитать оборону победой.
+const CLEAR_GRACE := 1.2
 
-## Бюджет выдаётся в начале раунда. Кривая «сдерживание -> перелом -> штурм»:
-## защитник сильнее в первом раунде, атакующий — в третьем.
-## Кривая штурма: 290 -> 410 -> 570 кредитов на раунд (с капельным доходом).
-## Симулятор показывает, что «полная» оборона за 345-420 кредитов держит
-## наземный залп; пробить её можно только воздухом или залпом «ПРОРЫВ»,
-## поэтому атакующему нужен запас именно к третьему раунду.
-const ROUND_BUDGET_ATTACKER: Array[int] = [200, 320, 480]
-## 100, а не 90 во втором и третьем раундах: тесла стоит 95, то есть при
-## бюджете 90 защитник физически не мог докупить единственный ответ на воздух
-## после первого раунда. 240/100/100 сохраняет «коэффициент осады» ~2,9:1.
-const ROUND_BUDGET_DEFENDER: Array[int] = [240, 100, 100]
-## Доход атакующего во время штурма — чтобы простой не превращался в 60 с тишины.
-const TRICKLE_ATTACKER := 1.5
+## Бюджет выдаётся в начале раунда и НЕ сгорает: остаток переносится.
+## Кривая «сдерживание -> перелом -> штурм»: у защитника больше денег в
+## первом раунде (нужно встать), у атакующего — в третьем.
+## ЭТАП 7: бюджеты выросли, потому что появились апгрейды — это второй,
+## «вертикальный» способ потратить кредиты.
+const ROUND_BUDGET_ATTACKER: Array[int] = [260, 180, 220]
+const ROUND_BUDGET_DEFENDER: Array[int] = [280, 160, 200]
+## Доход атакующего во время штурма — чтобы простой не превращался в тишину.
+const TRICKLE_ATTACKER := 2.0
 
 ## Способности Защитника (SPEC-01): по одному применению каждого типа за раунд.
 const OVERCLOCK_MULT := 1.4
@@ -72,6 +77,11 @@ var attacker_units: Array[String] = LoadoutManager.DEFAULT_UNITS.duplicate()
 var round_index := 1
 var round_phase := Phase.PLANNING
 var phase_time_left := PLANNING_TIME
+## Окно спавна: true — штурмовик может покупать, false — только добивание.
+var spawn_open := true
+var spawn_window_left := SPAWN_WINDOW
+## Уровни типов юнитов (ЭТАП 7): id -> 1..10. Общие для обоих пиров.
+var unit_levels: Dictionary = {}
 var defender_wins := 0
 var attacker_wins := 0
 var overclock_left := 0.0
@@ -81,6 +91,10 @@ var abilities_used: Dictionary = {}
 ## Статистика матча (считается ТОЛЬКО на сервере; клиент получает слепок
 ## в _end_match и показывает на финальном экране).
 var stats := _fresh_stats()
+
+## Время с пустого поля (для мгновенного конца раунда после добивания).
+var _clear_time := 0.0
+var _assault_time := 0.0
 
 ## Накопитель капельного дохода (сервер), чтобы не терять дробные кредиты.
 var _trickle := 0.0
@@ -108,6 +122,8 @@ func _fresh_stats() -> Dictionary:
 		"repairs_used": 0,
 		"overclocks_used": 0,
 		"breakthroughs_used": 0,
+		"tower_upgrades": 0,
+		"unit_upgrades": 0,
 	}
 
 
@@ -147,6 +163,13 @@ func setup_match(p_defender: int, p_attacker: int,
 	_round_resolved = false
 	abilities_used = {defender_peer: [], attacker_peer: []}
 	_trickle = 0.0
+	unit_levels = {}
+	for id in attacker_units:
+		unit_levels[String(id)] = 1
+	spawn_open = true
+	spawn_window_left = SPAWN_WINDOW
+	_clear_time = 0.0
+	_assault_time = 0.0
 	stats = _fresh_stats()
 	base_hp = ROUND_BASE_HP
 	round_phase = Phase.PLANNING
@@ -174,6 +197,21 @@ func is_assault() -> bool:
 	return round_phase == Phase.ASSAULT and not game_over
 
 
+## Может ли штурмовик покупать прямо сейчас: подготовка или окно спавна.
+## После 30-й секунды штурма окно закрывается — остаётся только добивание.
+func can_buy_units() -> bool:
+	if game_over:
+		return false
+	if round_phase == Phase.PLANNING:
+		return true
+	return round_phase == Phase.ASSAULT and spawn_open
+
+
+## Открыто ли окно спавна (для индикатора фазы).
+func spawn_window_open() -> bool:
+	return is_assault() and spawn_open
+
+
 func fire_rate_multiplier() -> float:
 	return OVERCLOCK_MULT if overclock_left > 0.0 else 1.0
 
@@ -186,15 +224,15 @@ func tick_phase(delta: float) -> void:
 	match round_phase:
 		Phase.ASSAULT:
 			_tick_trickle(delta)
-			if phase_time_left <= 0.0:
-				# База выстояла — раунд за Защитником (attacker_won = false).
-				_finish_round(false)
+			_assault_time += delta
+			if spawn_open:
+				spawn_window_left = maxf(spawn_window_left - delta, 0.0)
+				if spawn_window_left <= 0.0:
+					_close_spawn()
+			_tick_assault_end(delta)
 		Phase.PLANNING:
 			if phase_time_left <= 0.0:
 				_start_assault()
-		Phase.REVIEW:
-			if phase_time_left <= 0.0:
-				_start_next_round()
 
 
 func _tick_trickle(delta: float) -> void:
@@ -209,9 +247,52 @@ func _tick_trickle(delta: float) -> void:
 func _start_assault() -> void:
 	round_phase = Phase.ASSAULT
 	_round_resolved = false
-	phase_time_left = ASSAULT_TIME
+	spawn_open = true
+	spawn_window_left = SPAWN_WINDOW
+	phase_time_left = SPAWN_WINDOW
+	_clear_time = 0.0
+	_assault_time = 0.0
 	_trickle = 0.0
-	_sync_phase.rpc(round_index, round_phase, ASSAULT_TIME)
+	_sync_phase.rpc(round_index, round_phase, SPAWN_WINDOW)
+
+
+## Окно спавна закрыто: покупки запрещены, идёт только добивание.
+func _close_spawn() -> void:
+	spawn_open = false
+	phase_time_left = 0.0
+	_sync_spawn.rpc(false)
+
+
+## Конец раунда по состоянию поля. Два условия:
+##   * поле пусто (нет юнитов и очередь пуста) дольше CLEAR_GRACE — оборона
+##     выстояла, раунд за защитником;
+##   * жёсткий лимит ASSAULT_MAX_TIME — предохранитель от вечного раунда.
+## Пока идёт окно спавна, пустое поле не завершает раунд: штурмовик может
+## копить кредиты на дорогой залп.
+func _tick_assault_end(delta: float) -> void:
+	if _assault_time >= ASSAULT_MAX_TIME:
+		_finish_round(false)
+		return
+	# Пока окно спавна открыто, пустое поле — это не «оборона выстояла», а
+	# пауза перед залпом: штурмовик вправе копить кредиты все 30 с. Раунд
+	# может закончиться досрочно только в добивании.
+	if spawn_open:
+		_clear_time = 0.0
+		return
+	if _field_is_clear():
+		_clear_time += delta
+		if _clear_time >= CLEAR_GRACE:
+			_finish_round(false)
+	else:
+		_clear_time = 0.0
+
+
+## На поле нет ни одного живого юнита и в очереди пусто.
+func _field_is_clear() -> bool:
+	var spawner := get_tree().current_scene.get_node_or_null("Road/UnitSpawner")
+	if spawner != null and spawner.has_method("queue_size") and spawner.queue_size() > 0:
+		return false
+	return get_tree().get_nodes_in_group("units").is_empty()
 
 
 ## Завершить раунд. attacker_won == true — база разрушена.
@@ -236,9 +317,8 @@ func _finish_round(attacker_won: bool) -> void:
 	# Поле чистится: недобитые юниты не должны «доехать» до базы уже после
 	# свистка, а очередь спавнера — переехать в следующий раунд.
 	_clear_battlefield()
-	round_phase = Phase.REVIEW
-	phase_time_left = REVIEW_TIME
-	_sync_phase.rpc(round_index, round_phase, REVIEW_TIME)
+	# Паузы «ИТОГ» больше нет: сразу готовим следующий раунд.
+	_start_next_round()
 
 
 ## Убирает всех юнитов с дороги. Вызывается ТОЛЬКО на сервере:
@@ -249,12 +329,12 @@ func _clear_battlefield() -> void:
 			node.queue_free()
 
 
-## Досрочно завершить штурм (атакующий «заглох»: нет денег, очереди и
-## юнитов). Раунд достаётся Защитнику. Вызывается из game.gd.
+## Досрочно завершить штурм (поле пусто, очередь пуста, а окно спавна уже
+## закрыто). Раунд достаётся Защитнику.
 func finish_round_by_timeout() -> void:
 	if not multiplayer.is_server() or game_over or not is_assault():
 		return
-	_finish_round(false)   # штурм заглох — раунд за Защитником
+	_finish_round(false)
 
 
 func _start_next_round() -> void:
@@ -262,6 +342,10 @@ func _start_next_round() -> void:
 	_round_resolved = false
 	round_phase = Phase.PLANNING
 	phase_time_left = PLANNING_TIME
+	spawn_open = true
+	spawn_window_left = SPAWN_WINDOW
+	_clear_time = 0.0
+	_assault_time = 0.0
 	base_hp = ROUND_BASE_HP
 	overclock_left = 0.0
 	abilities_used = {defender_peer: [], attacker_peer: []}
@@ -273,6 +357,13 @@ func _start_next_round() -> void:
 	_set_gold.rpc(attacker_peer, int(gold.get(attacker_peer, 0))
 			+ ROUND_BUDGET_ATTACKER[round_index - 1])
 	_sync_phase.rpc(round_index, round_phase, PLANNING_TIME)
+
+
+@rpc("authority", "call_local", "reliable")
+func _sync_spawn(open: bool) -> void:
+	spawn_open = open
+	if not open:
+		phase_time_left = 0.0
 
 
 @rpc("authority", "call_local", "reliable")
@@ -323,7 +414,7 @@ func apply_ability(peer_id: int, ability: String) -> void:
 
 
 func _ability_allowed(peer_id: int, ability: String) -> bool:
-	if round_phase == Phase.REVIEW or round_phase == Phase.FINISHED:
+	if round_phase == Phase.FINISHED:
 		return false
 	var used: Array = abilities_used.get(peer_id, [])
 	if used.has(ability):
@@ -418,9 +509,15 @@ func record_tower_built() -> void:
 	if game_over:
 		return
 	stats["towers_built"] += 1
-	# Порог = полная застройка деки (3 типа × 2): 10 башен в BO3 недостижимы.
-	if stats["towers_built"] == GameDB.MAX_TOWERS_PER_TYPE * LoadoutManager.DECK_SIZE:
+	if stats["towers_built"] == GameDB.TOWERS_FOR_ACHIEVEMENT:
 		SteamManager.unlock_achievement(SteamManager.ACH_MASTER_BUILDER)
+
+
+## Защитник купил уровень башни.
+func record_tower_upgrade() -> void:
+	if game_over:
+		return
+	stats["tower_upgrades"] += 1
 
 
 ## Сервер заспавнил юнита (вызывается из unit_spawner._try_spawn).
@@ -431,6 +528,52 @@ func record_unit_sent() -> void:
 ## Штурмовик оплатил формацию ×N (вызывается из unit_spawner._server_enqueue).
 func record_wave() -> void:
 	stats["waves_sent"] += 1
+
+
+# ------------------------------------------------ Уровни юнитов (ЭТАП 7) -----
+
+## Уровень типа юнита (1, если ещё не качали).
+func unit_level(unit_id: String) -> int:
+	return int(unit_levels.get(unit_id, 1))
+
+
+## Статы юнита с учётом купленного уровня — для спавнера и HUD.
+func unit_stats(unit_id: String) -> Dictionary:
+	return GameDB.unit_stats_at(unit_id, unit_level(unit_id))
+
+
+## Запрос апгрейда от клиента-штурмовика.
+@rpc("any_peer", "call_remote", "reliable")
+func request_unit_upgrade(unit_id: String) -> void:
+	if not multiplayer.is_server():
+		return
+	apply_unit_upgrade(multiplayer.get_remote_sender_id(), unit_id)
+
+
+## Серверная версия (хост не может вызвать RPC на себя).
+func apply_unit_upgrade(peer_id: int, unit_id: String) -> void:
+	if not multiplayer.is_server() or game_over:
+		return
+	if peer_id != attacker_peer or not GameDB.UNITS.has(unit_id):
+		return
+	if not attacker_units.has(unit_id):
+		return
+	if round_phase == Phase.FINISHED:
+		return
+	var level := unit_level(unit_id)
+	if level >= GameDB.UNIT_MAX_LEVEL:
+		return
+	var cost := GameDB.unit_upgrade_cost(unit_id, level)
+	if not try_spend(peer_id, cost):
+		return
+	stats["unit_upgrades"] += 1
+	_sync_unit_level.rpc(unit_id, level + 1)
+
+
+@rpc("authority", "call_local", "reliable")
+func _sync_unit_level(unit_id: String, level: int) -> void:
+	unit_levels[unit_id] = level
+	unit_level_changed.emit(unit_id, level)
 
 
 ## Сдаться (клиент): сервер засчитывает поражение отправителю.

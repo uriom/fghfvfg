@@ -8,6 +8,11 @@ extends Node2D
 ##   * "lob"/"frost"/"flame" — Projectile летает у всех, урон — на сервере;
 ##   * "chain"         — цепная молния Теслы, урон — сервер, FX — RPC.
 ##
+## УРОВНИ (ЭТАП 7): башня качается до 10-го уровня за кредиты (клик по
+## башне в подготовке или в бою). Уровень синхронизируется authority-RPC, а
+## статы пересобираются из GameDB.tower_stats_at() — HUD и симулятор считают
+## ту же формулу, поэтому карточка не врёт.
+##
 ## ВИЗУАЛ 2.5D: у каждой башни цельный PNG-арт, который рисуется ОДИН раз.
 ## Старый вариант накладывал две копии одной полной иллюстрации и вращал
 ## верхнюю: платформа двоилась и ствол выглядел оторванным. Теперь полный
@@ -23,11 +28,15 @@ const BASE_SIZE := 58.0        # простой силуэт занимает п
 var tower_id := ""
 var owner_peer := 1
 var cell := Vector2i.ZERO
+## Уровень 1..GameDB.TOWER_MAX_LEVEL. Меняется только через sync_level().
+var level := 1
 var stats: Dictionary = {}
 
 var _cooldown := 0.0
 var _target: Unit = null
 var _recoil_tween: Tween      # активный твин отдачи (перезапускается)
+var _level_label: Label
+var _aura_ring: Line2D
 
 @onready var range_disc: Polygon2D = $RangeDisc
 @onready var range_ring: Line2D = $RangeRing
@@ -37,11 +46,13 @@ var _recoil_tween: Tween      # активный твин отдачи (пере
 
 
 ## Вызывается GameMap._spawn_tower() ДО добавления в дерево, на обоих пирах.
-func setup(p_tower_id: String, p_owner: int, p_cell: Vector2i, p_position: Vector2) -> void:
+func setup(p_tower_id: String, p_owner: int, p_cell: Vector2i, p_position: Vector2,
+		p_level := 1) -> void:
 	tower_id = p_tower_id
 	owner_peer = p_owner
 	cell = p_cell
 	position = p_position
+	level = clampi(p_level, 1, GameDB.TOWER_MAX_LEVEL)
 
 
 func _ready() -> void:
@@ -49,8 +60,83 @@ func _ready() -> void:
 		push_error("Tower: неизвестный тип башни '%s'" % tower_id)
 		queue_free()
 		return
-	stats = GameDB.TOWERS[tower_id]
+	stats = GameDB.tower_stats_at(tower_id, level)
 	_build_visual()
+	_build_level_badge()
+
+
+## Новый уровень башни: пересчёт статов и визуала. Вызывается с сервера
+## (call_local), поэтому уровень одинаков у обоих игроков.
+@rpc("authority", "call_local", "reliable")
+func sync_level(new_level: int) -> void:
+	var clamped := clampi(new_level, 1, GameDB.TOWER_MAX_LEVEL)
+	if clamped == level:
+		return
+	var improved := clamped > level
+	level = clamped
+	stats = GameDB.tower_stats_at(tower_id, level)
+	if is_inside_tree():
+		_refresh_range_visuals()
+		_refresh_level_badge()
+		if improved:
+			_play_upgrade_burst()
+
+
+## Цена следующего уровня (0 — уже максимум). HUD показывает её на карточке.
+func upgrade_cost() -> int:
+	return GameDB.tower_upgrade_cost(tower_id, level)
+
+
+func is_max_level() -> bool:
+	return level >= GameDB.TOWER_MAX_LEVEL
+
+
+## Долгий «заряд» уровня: кольцо расходится от башни и гаснет.
+func _play_upgrade_burst() -> void:
+	var ring := Line2D.new()
+	ring.width = 2.0
+	ring.closed = true
+	ring.default_color = Color(stats["color"], 0.9)
+	ring.z_index = 8
+	var pts := PackedVector2Array()
+	for i in 40:
+		var a := TAU * float(i) / 40.0
+		pts.append(Vector2(cos(a), sin(a)) * 14.0)
+	ring.points = pts
+	var parent := get_parent()
+	if parent == null:
+		return
+	parent.add_child(ring)
+	ring.global_position = global_position
+	var tween := ring.create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(ring, "scale", Vector2.ONE * 2.6, 0.45) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tween.tween_property(ring, "modulate:a", 0.0, 0.45)
+	tween.chain().tween_callback(ring.queue_free)
+
+
+func _build_level_badge() -> void:
+	_level_label = Label.new()
+	_level_label.name = "LevelBadge"
+	_level_label.add_theme_font_size_override("font_size", 10)
+	_level_label.add_theme_color_override("font_outline_color", Color(0, 0.02, 0.05, 0.95))
+	_level_label.add_theme_constant_override("outline_size", 4)
+	_level_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_level_label.position = Vector2(-22.0, -40.0)
+	_level_label.size = Vector2(44.0, 12.0)
+	_level_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_level_label)
+	_refresh_level_badge()
+
+
+func _refresh_level_badge() -> void:
+	if _level_label == null:
+		return
+	_level_label.text = "УР %d" % level
+	var t := clampf(float(level - 1) / float(GameDB.TOWER_MAX_LEVEL - 1), 0.0, 1.0)
+	_level_label.add_theme_color_override("font_color",
+			Color(0.65, 0.85, 1.0).lerp(Color(1.0, 0.85, 0.3), t))
 
 
 func _physics_process(delta: float) -> void:
@@ -258,16 +344,23 @@ func _fit_scale(tex: Texture2D, target_size: float) -> float:
 	return target_size / maxf(big, 1.0)
 
 
-func _build_visual() -> void:
-	var tex := _tower_texture()
-	# Зона обстрела: полупрозрачный диск + тонкое кольцо.
+## Зона обстрела и кольцо сплеша. Пересобирается при апгрейде (радиус растёт).
+func _refresh_range_visuals() -> void:
 	range_disc.polygon = _circle_pts(float(stats["range"]))
 	range_ring.points = _circle_line(float(stats["range"]))
-	# Кольцо сплеша мортиры (остальным не нужно).
+	# Уровень читается и по насыщенности контура: 10-й уровень светится.
+	var glow := 0.10 + 0.03 * float(level)
+	range_ring.default_color = Color(stats["color"], clampf(glow, 0.0, 0.55))
+	range_disc.color = Color(stats["color"], 0.02 + 0.012 * float(level))
 	if String(stats.get("kind")) == "lob":
 		splash_ring.points = _circle_line(float(stats.get("splash_radius", 60.0)))
 		splash_ring.default_color = Color(stats["color"], 0.35)
 		splash_ring.visible = true
+
+
+func _build_visual() -> void:
+	var tex := _tower_texture()
+	_refresh_range_visuals()
 	# В assets лежит целая иллюстрация башни, а не раздельные база/ствол.
 	# Рисуем её ровно один раз: две наложенные копии давали двоение корпуса.
 	base_sprite.visible = tex != null
