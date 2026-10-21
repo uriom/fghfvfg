@@ -14,11 +14,11 @@ extends Node2D
 ## спрайт остаётся целым, а выстрел читается по вспышке/трассеру/снаряду.
 ## Зона обстрела — служебные RangeDisc/RangeRing (Polygon2D/Line2D).
 
-const BODY_RADIUS := 18.0      # точка вспышки/вылета снаряда от центра башни
+const BODY_RADIUS := 23.0      # дульная точка у внешнего края клетки
 const CIRCLE_SEGMENTS := 48
 const RECOIL_DISTANCE := 2.5   # лёгкий импульс цельного арта при выстреле
 const RECOIL_TIME := 0.12
-const BASE_SIZE := 50.0        # размер цельной читаемой иллюстрации, px
+const BASE_SIZE := 58.0        # простой силуэт занимает почти одну клетку
 
 var tower_id := ""
 var owner_peer := 1

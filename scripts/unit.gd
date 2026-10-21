@@ -24,7 +24,7 @@ const RUN_SHAKE_STEP := 0.12      # сек на одно отклонение
 const HEAVY_STEP := 0.3           # сек на полцикла squash/stretch
 const FLY_BOB_AMPLITUDE := 3.0    # px, амплитуда парения
 const FLY_BOB_STEP := 0.5         # сек, медленно — «дыхание»
-const SPRITE_SIZE := 40.0         # размер нового читаемого арта юнита, px
+const SPRITE_SIZE := 48.0         # корпус почти целиком занимает одну клетку
 const GAIT_SHADER := preload("res://shaders/unit_gait.gdshader")
 
 var unit_id := ""
@@ -212,15 +212,21 @@ func _build_visual() -> void:
 		flight_halo.visible = false
 	# Кольцо замедления вокруг корпуса (показывается в _process).
 	slow_ring.points = _circle_pts(r + 7.0)
-	# Спрайт персонажа: вписан в SPRITE_SIZE, у босса — крупнее по радиусу.
+	# Простой силуэт занимает почти всю клетку; босс чуть крупнее, но не
+	# перекрывает соседние клетки и движущихся рядом юнитов.
+	var sprite_target_size := clampf(
+			SPRITE_SIZE + maxf(r - RADIUS, 0.0) * 0.75,
+			SPRITE_SIZE,
+			SPRITE_SIZE * 1.14)
 	var tex := _unit_texture()
 	if tex != null:
 		body_sprite.texture = tex
-		body_sprite.scale = Vector2.ONE * _fit_scale(tex, SPRITE_SIZE + (r - RADIUS) * 2.0)
+		body_sprite.scale = Vector2.ONE * _fit_scale(tex, sprite_target_size)
 		if not stats["flying"]:
 			var gait := ShaderMaterial.new()
 			gait.shader = GAIT_SHADER
-			gait.set_shader_parameter("gait_speed", 4.6 if stats.has("radius") or stats.has("aura_radius") else 8.0)
+			var gait_speed := 4.6 if stats.has("radius") or stats.has("aura_radius") else 8.0
+			gait.set_shader_parameter("gait_speed", gait_speed)
 			gait.set_shader_parameter("gait_amount", 0.035)
 			gait.set_shader_parameter("gait_phase", float(spawn_index % 9) * 0.71)
 			body_sprite.material = gait
@@ -228,7 +234,7 @@ func _build_visual() -> void:
 		body_sprite.visible = false
 	# Полоска HP над корпусом.
 	_bar_width = r * 2.4
-	_bar_pos = Vector2(-_bar_width * 0.5, -r - 11.0)
+	_bar_pos = Vector2(-_bar_width * 0.5, -maxf(r + 11.0, sprite_target_size * 0.5 + 7.0))
 	hp_bar_bg.polygon = _rect_pts(_bar_pos, _bar_width, 5.0)
 	_update_hp_bar()
 

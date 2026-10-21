@@ -106,7 +106,6 @@ func _build_menu_backdrop() -> void:
 	gradient.set_color(0, Color(0.008, 0.020, 0.038, 0.97))
 	gradient.set_color(1, Color(0.008, 0.020, 0.038, 0.0))
 	gradient.add_point(0.58, Color(0.008, 0.020, 0.038, 0.82))
-	gradient.set_color(1, Color(0.008, 0.020, 0.038, 0.82))
 	var gradient_texture := GradientTexture2D.new()
 	gradient_texture.gradient = gradient
 	gradient_texture.fill = GradientTexture2D.FILL_LINEAR
@@ -207,7 +206,8 @@ func _fit_responsive_layout() -> void:
 	var ratio := lerpf(0.56, 0.62, clampf((width - 960.0) / 192.0, 0.0, 1.0))
 	var column_width := minf(width * ratio, 740.0)
 	var content_width := maxf(0.0, column_width - 56.0)
-	var tile_width := maxf(112.0, (content_width - 20.0) / 3.0)
+	var section_width := maxf(0.0, (content_width - 12.0) * 0.5)
+	var tile_width := maxf(112.0, (section_width - 8.0) * 0.5)
 	_loadout_tile_width = tile_width
 	var main_column := get_node_or_null("Main") as Control
 	if main_column != null and width > 0.0:
@@ -223,9 +223,7 @@ func _fit_responsive_layout() -> void:
 		for grid in [tower_grid, unit_grid]:
 			for child in grid.get_children():
 				if child is Button:
-					(child as Button).custom_minimum_size.x = tile_width
-					(child as Button).add_theme_font_size_override(
-						"font_size", 11 if tile_width < 150.0 else 13 if tile_width < 185.0 else 15)
+					(child as Button).custom_minimum_size = Vector2(tile_width, 82.0)
 	if _utility_row != null:
 		for child in _utility_row.get_children():
 			if child is Button:
@@ -489,24 +487,119 @@ func _build_loadout_cards() -> void:
 		tower_grid.add_child(_make_card(tower_id, "towers"))
 	for unit_id in GameDB.UNIT_ORDER:
 		unit_grid.add_child(_make_card(unit_id, "units"))
+	var reset_button := get_node("%ResetLoadoutBtn") as Button
+	reset_button.text = "СБРОСИТЬ ДЕКИ"
+	reset_button.custom_minimum_size.y = 34.0
+	reset_button.add_theme_font_size_override("font_size", 11)
+	loadout_status.add_theme_font_size_override("font_size", 10)
 	_refresh_deck_headers()
+	if loadout_status.text.strip_edges().is_empty():
+		loadout_status.text = "Наведите курсор на карту, чтобы увидеть характеристики."
 
 
 func _make_card(id: String, which: String) -> Button:
 	var stats: Dictionary = (GameDB.TOWERS if which == "towers" else GameDB.UNITS)[id]
 	var card := Button.new()
+	card.name = "%s_%s" % [which, id]
 	card.toggle_mode = true
-	card.custom_minimum_size = Vector2(_loadout_tile_width, 96)
+	card.custom_minimum_size = Vector2(_loadout_tile_width, 82.0)
 	card.button_pressed = (LoadoutManager.towers if which == "towers" \
 			else LoadoutManager.units).has(id)
-	card.text = _card_text(id, stats)
+	card.text = ""
+	card.tooltip_text = _card_text(id, stats)
+	card.add_theme_stylebox_override("normal", _loadout_card_style(
+			Color(0.018, 0.040, 0.061, 0.96), Color(UISkin.CYAN, 0.22), 1))
+	card.add_theme_stylebox_override("hover", _loadout_card_style(
+			Color(0.040, 0.085, 0.12, 0.98), Color(UISkin.CYAN, 0.72), 1))
+	card.add_theme_stylebox_override("pressed", _loadout_card_style(
+			Color(0.025, 0.105, 0.13, 0.99), Color(UISkin.CYAN, 0.92), 2))
+	card.add_theme_stylebox_override("hover_pressed", _loadout_card_style(
+			Color(0.045, 0.15, 0.18, 1.0), Color(0.68, 0.96, 1.0, 1.0), 2))
+	card.add_theme_stylebox_override("focus", _loadout_card_style(
+			Color(0.035, 0.075, 0.10, 1.0), Color(UISkin.CYAN, 0.8), 2))
+	var content := HBoxContainer.new()
+	content.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	content.offset_left = 7.0
+	content.offset_top = 5.0
+	content.offset_right = -7.0
+	content.offset_bottom = -5.0
+	content.add_theme_constant_override("separation", 6)
+	content.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.add_child(content)
+	var icon := TextureRect.new()
+	icon.custom_minimum_size = Vector2(42.0, 42.0)
+	icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	icon.texture = load("res://assets/img/%s.png" % id)
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	content.add_child(icon)
+	var details := VBoxContainer.new()
+	details.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	details.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	details.add_theme_constant_override("separation", 1)
+	details.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	content.add_child(details)
+	var title := Label.new()
+	title.text = String(stats["name"]).to_upper()
+	title.clip_text = true
+	title.add_theme_font_size_override("font_size", 11)
+	title.add_theme_color_override("font_color", UISkin.TEXT)
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	details.add_child(title)
+	var cost := Label.new()
+	cost.text = "%d  КР" % int(stats["cost"])
+	cost.add_theme_font_size_override("font_size", 9)
+	cost.add_theme_color_override("font_color", UISkin.AMBER)
+	cost.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	details.add_child(cost)
+	var role := Label.new()
+	role.text = _card_role(id, which)
+	role.clip_text = true
+	role.add_theme_font_size_override("font_size", 8)
+	role.add_theme_color_override("font_color", UISkin.MUTED)
+	role.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	details.add_child(role)
 	_wire_button_feedback(card)
 	card.toggled.connect(func(pressed: bool) -> void:
 		_on_card_toggled(which, id, card, pressed))
 	return card
 
 
-## Короткая сводка характеристик для плитки (3 строки).
+func _loadout_card_style(fill: Color, outline: Color, border_width: int) -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = fill
+	style.border_color = outline
+	style.set_border_width_all(border_width)
+	style.set_corner_radius_all(8)
+	style.content_margin_left = 5.0
+	style.content_margin_right = 5.0
+	style.content_margin_top = 4.0
+	style.content_margin_bottom = 4.0
+	return style
+
+
+func _card_role(id: String, which: String) -> String:
+	if which == "towers":
+		var tower_roles := {
+			"sniper": "ДАЛЬНЯЯ",
+			"splash": "ВЗРЫВНАЯ",
+			"frost": "ЗАМЕДЛЕНИЕ",
+			"flamer": "БЛИЖНЯЯ",
+			"tesla": "ЦЕПНАЯ",
+		}
+		return str(tower_roles.get(id, "ОБОРОНА"))
+	var unit_roles := {
+		"fast": "ЛЁГКИЙ",
+		"rider": "МОТО",
+		"tank": "ТЯЖЁЛЫЙ",
+		"flying": "ЛЕТАЕТ",
+		"boss": "ТАРАН",
+	}
+	return str(unit_roles.get(id, "ЮНИТ"))
+
+
+## Полная сводка характеристик в подсказке карточки.
 func _card_text(_id: String, stats: Dictionary) -> String:
 	var lines: Array[String] = []
 	if stats.has("kind"):       # башня
@@ -546,10 +639,12 @@ func _on_card_toggled(which: String, id: String, card: Button, pressed: bool) ->
 
 
 func _refresh_deck_headers() -> void:
-	tower_header.text = "Башни Защитника — %d/%d" % [LoadoutManager.towers.size(),
+	tower_header.text = "БАШНИ ЗАЩИТНИКА  ·  %d/%d" % [LoadoutManager.towers.size(),
 			LoadoutManager.DECK_SIZE]
-	unit_header.text = "Юниты Штурмовика — %d/%d" % [LoadoutManager.units.size(),
+	unit_header.text = "ЮНИТЫ ШТУРМОВИКА  ·  %d/%d" % [LoadoutManager.units.size(),
 			LoadoutManager.DECK_SIZE]
+	tower_header.add_theme_color_override("font_color", UISkin.CYAN)
+	unit_header.add_theme_color_override("font_color", UISkin.AMBER)
 
 
 func _on_reset_loadout() -> void:

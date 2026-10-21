@@ -165,29 +165,48 @@ visible = false
 layout_mode = 2
 theme_override_constants/separation = 10
 
-[node name="TowerHeader" type="Label" parent="Main/VBox/Panels/LoadoutPanel"]
+[node name="LoadoutColumns" type="HBoxContainer" parent="Main/VBox/Panels/LoadoutPanel"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="TowerColumn" type="VBoxContainer" parent="Main/VBox/Panels/LoadoutPanel/LoadoutColumns"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 7
+
+[node name="TowerHeader" type="Label" parent="Main/VBox/Panels/LoadoutPanel/LoadoutColumns/TowerColumn"]
 unique_name_in_owner = true
 layout_mode = 2
-theme_override_font_sizes/font_size = 19
-text = "Башни Защитника — 3/3"
+theme_override_font_sizes/font_size = 14
+text = "БАШНИ  ·  3/3"
 
-[node name="TowerGrid" type="GridContainer" parent="Main/VBox/Panels/LoadoutPanel"]
-unique_name_in_owner = true
-columns = 3
-theme_override_constants/h_separation = 10
-theme_override_constants/v_separation = 10
-
-[node name="UnitHeader" type="Label" parent="Main/VBox/Panels/LoadoutPanel"]
+[node name="TowerGrid" type="GridContainer" parent="Main/VBox/Panels/LoadoutPanel/LoadoutColumns/TowerColumn"]
 unique_name_in_owner = true
 layout_mode = 2
-theme_override_font_sizes/font_size = 19
-text = "Юниты Штурмовика — 3/3"
+columns = 2
+theme_override_constants/h_separation = 8
+theme_override_constants/v_separation = 8
 
-[node name="UnitGrid" type="GridContainer" parent="Main/VBox/Panels/LoadoutPanel"]
+[node name="LoadoutDivider" type="VSeparator" parent="Main/VBox/Panels/LoadoutPanel/LoadoutColumns"]
+layout_mode = 2
+
+[node name="UnitColumn" type="VBoxContainer" parent="Main/VBox/Panels/LoadoutPanel/LoadoutColumns"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 7
+
+[node name="UnitHeader" type="Label" parent="Main/VBox/Panels/LoadoutPanel/LoadoutColumns/UnitColumn"]
 unique_name_in_owner = true
-columns = 3
-theme_override_constants/h_separation = 10
-theme_override_constants/v_separation = 10
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = "ЮНИТЫ  ·  3/3"
+
+[node name="UnitGrid" type="GridContainer" parent="Main/VBox/Panels/LoadoutPanel/LoadoutColumns/UnitColumn"]
+unique_name_in_owner = true
+layout_mode = 2
+columns = 2
+theme_override_constants/h_separation = 8
+theme_override_constants/v_separation = 8
 
 [node name="ResetLoadoutBtn" type="Button" parent="Main/VBox/Panels/LoadoutPanel"]
 unique_name_in_owner = true

@@ -9,7 +9,7 @@
 
 [sub_resource type="Curve2D" id="Curve2D_road"]
 _data = {
-"points": PackedVector2Array(0, 0, 0, 0, 64, 130, 0, 0, 0, 0, 1088, 130, 0, 0, 0, 0, 1088, 340, 0, 0, 0, 0, 64, 340),
+"points": PackedVector2Array(0, 0, 0, 0, 24, 120, 0, 0, 0, 0, 1128, 120, 0, 0, 0, 0, 1128, 312, 0, 0, 0, 0, 24, 312),
 "point_count": 4
 }
 
@@ -18,7 +18,7 @@ script = ExtResource("1_game")
 
 [node name="ArenaBackdrop" type="Sprite2D" parent="."]
 position = Vector2(576, 324)
-scale = Vector2(0.801, 0.801)
+scale = Vector2(1, 1)
 z_index = -20
 texture = ExtResource("7_bg")
 
@@ -31,8 +31,8 @@ curve = SubResource("Curve2D_road")
 
 [node name="RoadLine" type="Line2D" parent="Road"]
 z_index = -1
-width = 46.0
-default_color = Color(0.10, 0.16, 0.21, 1.0)
+width = 48.0
+default_color = Color(0.12, 0.22, 0.30, 1.0)
 
 [node name="UnitSpawner" type="MultiplayerSpawner" parent="Road"]
 unique_name_in_owner = true
@@ -43,7 +43,9 @@ script = ExtResource("3_unitspawner")
 unique_name_in_owner = true
 script = ExtResource("2_map")
 road_node_path = NodePath("../Road")
-buildable_rect = Rect2(0, 64, 1152, 320)
+cell_size = Vector2i(48, 48)
+buildable_rect = Rect2(0, 96, 1152, 288)
+road_half_width = 27.0
 
 [node name="Towers" type="Node2D" parent="Map"]
 
