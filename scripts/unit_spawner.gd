@@ -16,17 +16,24 @@ extends MultiplayerSpawner
 
 const UNIT_SCENE := preload("res://scenes/units/unit.tscn")
 
-## Очередь: 40 юнитов — это ~7 с беспрерывного выпуска. Накопить больше
-## не даёт смысла (окно спавна 30 с), но и не режет «зажал кнопку и залил».
+## Очередь: 40 юнитов. Накопить больше не даёт смысла (окно спавна 30 с),
+## но и не режет «зажал кнопку и залил».
 const MAX_QUEUE := 40
 ## Потолок живых юнитов: предохранитель от «каши» из нод и просадки FPS.
 const MAX_ALIVE := 70
+## Минимальный зазор между покупками одного пира, мс. HUD держит тот же
+## лимит на клиенте, сервер — страховка от самодельного клиента.
+const BUY_GAP_MS := 200
 
-@export var deploy_interval := 0.45 # пауза между юнитами очереди, сек
+## Пауза между юнитами очереди. 0,2 с = тот же зазор, что и у кнопки: юниты
+## выходят ровно с той частотой, с которой их покупают.
+@export var deploy_interval := 0.2
 
 var _spawn_counter := 0
 var _queue: Array[String] = []
 var _deploy_clock := 0.0
+## peer -> мс последней покупки (серверный анти-спам).
+var _last_buy_ms: Dictionary = {}
 ## Размер очереди, известный клиенту (HUD показывает «сколько ещё выйдет»).
 var _remote_queue := 0
 
@@ -81,13 +88,23 @@ func _server_enqueue(sender: int, unit_id: String, count: int) -> void:
 	count = clampi(count, 1, MAX_QUEUE)
 	if not _enqueue_allowed(sender, unit_id, count):
 		return
+	# Анти-спам: чаще одного пакета в 0,2 с сервер покупки не принимает.
+	var now := Time.get_ticks_msec()
+	if now - int(_last_buy_ms.get(sender, -BUY_GAP_MS)) < BUY_GAP_MS:
+		return
 	var total_cost: int = int(GameDB.UNITS[unit_id]["cost"]) * count
 	if not GameState.try_spend(sender, total_cost):
 		return
+	_last_buy_ms[sender] = now
 	if count >= 5:
 		GameState.record_wave()
+	var was_empty := _queue.is_empty()
 	for i in count:
 		_queue.append(unit_id)
+	# Первый юнит после пустой очереди выходит на следующем кадре, а не через
+	# целый deploy_interval: «нажал — он уже идёт».
+	if was_empty:
+		_deploy_clock = deploy_interval
 	_sync_queue.rpc(_queue.size())
 
 

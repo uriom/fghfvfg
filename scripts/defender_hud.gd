@@ -567,16 +567,14 @@ func _refresh_card_states() -> void:
 		var status: Label = data["status"]
 		var placed := _map.tower_count(tower_id) if _map != null else 0
 		var best := _best_level(tower_id) if _map != null else 0
-		if not GameState.is_planning():
-			# В штурме строить нельзя, но апгрейд уже стоящих — можно.
-			# Карточки остаются живыми: игрок видит парк и уровень башен.
-			status.text = "ШТУРМ · УР %d" % best
-			status.add_theme_color_override("font_color", MUTED)
-		elif selected:
-			status.text = "ВЫБРАНО · ×%d" % placed
+		# ЭТАП 8: строить можно и в штурме, поэтому «фаза» больше не гасит
+		# карточки — статус всегда про выбор, деньги и уровень парка.
+		var suffix := "" if best <= 0 else " · УР %d" % best
+		if selected:
+			status.text = "ВЫБРАНО · ×%d%s" % [placed, suffix]
 			status.add_theme_color_override("font_color", CYAN)
 		elif affordable:
-			status.text = "ГОТОВО · ×%d" % placed
+			status.text = "ГОТОВО · ×%d%s" % [placed, suffix]
 			status.add_theme_color_override("font_color", GREEN)
 		else:
 			status.text = "МАЛО КРЕДИТОВ"

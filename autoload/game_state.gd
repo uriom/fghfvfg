@@ -32,8 +32,10 @@ signal unit_level_changed(unit_id: String, level: int)
 enum Phase { PLANNING, ASSAULT, FINISHED }
 enum Ability { REPAIR, OVERCLOCK, BREAKTHROUGH }
 
-const ROUNDS_TO_WIN := 2
-const MAX_ROUNDS := 3
+## Матч — 10 волн (ЭТАП 8): побеждает тот, кто взял 6 раундов. Раньше
+## встречи матч не заканчивается (минимум 6 волн), позже — не тянется.
+const ROUNDS_TO_WIN := 6
+const MAX_ROUNDS := 10
 const ROUND_BASE_HP := 15
 ## Совместимость: старые HUD/тесты читали BASE_MAX_HP. Теперь это HP раунда.
 const BASE_MAX_HP := ROUND_BASE_HP
@@ -48,13 +50,18 @@ const ASSAULT_MAX_TIME := 75.0
 ## Сколько секунд пустого поля нужно, чтобы засчитать оборону победой.
 const CLEAR_GRACE := 1.2
 
-## Бюджет выдаётся в начале раунда и НЕ сгорает: остаток переносится.
-## Кривая «сдерживание -> перелом -> штурм»: у защитника больше денег в
-## первом раунде (нужно встать), у атакующего — в третьем.
-## ЭТАП 7: бюджеты выросли, потому что появились апгрейды — это второй,
-## «вертикальный» способ потратить кредиты.
-const ROUND_BUDGET_ATTACKER: Array[int] = [260, 180, 220]
-const ROUND_BUDGET_DEFENDER: Array[int] = [280, 160, 200]
+## Бюджет волны НЕ сгорает: остаток переносится. ЭТАП 8 — 10 волн.
+## Ключевая асимметрия: башни и уровни защитника переживают волны (его доход
+## копится), армия штурмовика умирает каждую волну (его касса — доход текущей
+## волны). Поэтому кривая у обоих геометрическая, но приращения защитника
+## меньше: иначе к 5-й волне оборона становится стеной, а к 10-й —
+## подавляющей (tools/balance_audit.py, профиль v4, режим decks).
+const ROUND_BUDGET_ATTACKER: Array[int] = [
+	260, 340, 440, 560, 720, 900, 1140, 1440, 1820, 2300,
+]
+const ROUND_BUDGET_DEFENDER: Array[int] = [
+	280, 72, 92, 112, 148, 176, 220, 276, 348, 436,
+]
 ## Доход атакующего во время штурма — чтобы простой не превращался в тишину.
 const TRICKLE_ATTACKER := 2.0
 
@@ -253,7 +260,7 @@ func _start_assault() -> void:
 	_clear_time = 0.0
 	_assault_time = 0.0
 	_trickle = 0.0
-	_sync_phase.rpc(round_index, round_phase, SPAWN_WINDOW)
+	_sync_phase.rpc(round_index, round_phase, SPAWN_WINDOW, true)
 
 
 ## Окно спавна закрыто: покупки запрещены, идёт только добивание.
@@ -311,8 +318,10 @@ func _finish_round(attacker_won: bool) -> void:
 	if attacker_wins >= ROUNDS_TO_WIN or defender_wins >= ROUNDS_TO_WIN:
 		finish_match(defender_wins > attacker_wins)
 		return
+	# 10-я волна позади, а 6 побед не набрал никто: счёт 5:5. Отдаём матч
+	# обороне — «база выстояла» должна читаться как победа защитника.
 	if round_index >= MAX_ROUNDS:
-		finish_match(defender_wins > attacker_wins)
+		finish_match(defender_wins >= attacker_wins)
 		return
 	# Поле чистится: недобитые юниты не должны «доехать» до базы уже после
 	# свистка, а очередь спавнера — переехать в следующий раунд.
@@ -356,7 +365,7 @@ func _start_next_round() -> void:
 			+ ROUND_BUDGET_DEFENDER[round_index - 1])
 	_set_gold.rpc(attacker_peer, int(gold.get(attacker_peer, 0))
 			+ ROUND_BUDGET_ATTACKER[round_index - 1])
-	_sync_phase.rpc(round_index, round_phase, PLANNING_TIME)
+	_sync_phase.rpc(round_index, round_phase, PLANNING_TIME, true)
 
 
 @rpc("authority", "call_local", "reliable")
@@ -375,10 +384,15 @@ func _sync_round_end(round_idx: int, attacker_won: bool,
 
 
 @rpc("authority", "call_local", "reliable")
-func _sync_phase(wave_round: int, phase: int, duration: float) -> void:
+func _sync_phase(wave_round: int, phase: int, duration: float, spawn := true) -> void:
 	round_index = wave_round
 	round_phase = phase
 	phase_time_left = duration
+	# Окно спавна едет вместе с фазой. Раньше клиент узнавал о закрытии окна
+	# (_sync_spawn(false)), но о новом открытии в следующем раунде — нет, и со
+	# 2-го раунда карточки штурмовика гасли: «во всех раундах нельзя спавнить».
+	spawn_open = spawn
+	spawn_window_left = SPAWN_WINDOW if spawn else 0.0
 	# Новый раунд — способности снова доступны (сброс и у клиента).
 	if phase == Phase.PLANNING:
 		abilities_used = {defender_peer: [], attacker_peer: []}

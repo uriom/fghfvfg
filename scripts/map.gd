@@ -249,7 +249,7 @@ func _unhandled_input(event: InputEvent) -> void:
 ## строит, B/Esc отменяет. Вызывается ДО GUI (_input), чтобы фокус на
 ## карточке башни не съедал подтверждение.
 func _input(event: InputEvent) -> void:
-	if not active or not GameState.is_planning():
+	if not active or GameState.game_over:
 		return
 	if not (event is InputEventKey or event is InputEventJoypadButton \
 			or event is InputEventJoypadMotion):
@@ -317,8 +317,10 @@ func _request_build(cell: Vector2i) -> void:
 	if occupied.has(cell):
 		_request_upgrade(cell)
 		return
-	if not GameState.is_planning():
-		_deny_build(cell, "ТОЛЬКО В ПОДГОТОВКЕ")
+	# ЭТАП 8: строить можно в ЛЮБОМ раунде и в любой фазе — и в подготовке,
+	# и в штурме. Раньше клик в бою упирался в «ТОЛЬКО В ПОДГОТОВКЕ».
+	if GameState.game_over:
+		_deny_build(cell, "МАТЧ ОКОНЧЕН")
 		return
 	if not is_cell_buildable(cell):
 		_deny_build(cell, "ЗДЕСЬ НЕЛЬЗЯ")
@@ -440,7 +442,7 @@ func place_tower_request(cell: Vector2i, tower_id: String) -> void:
 
 
 ## Серверная валидация и проведение постройки. sender — peer, платящий золото.
-## Строить можно только в ПОДГОТОВКЕ; лимитов на количество нет (ЭТАП 7).
+## Строить можно в любой фазе и в любом раунде; лимитов на количество нет.
 func _server_place_tower(sender: int, cell: Vector2i, tower_id: String) -> void:
 	if not _can_place_tower(sender, cell, tower_id):
 		return
@@ -451,9 +453,10 @@ func _server_place_tower(sender: int, cell: Vector2i, tower_id: String) -> void:
 	_confirm_tower.rpc(cell, tower_id, sender)
 
 
-## Все правила постройки в одном месте (роль, дек, фаза, лимиты, клетка).
+## Все правила постройки в одном месте (роль, дек, клетка).
+## Фаза не проверяется: строить разрешено и в подготовке, и в штурме.
 func _can_place_tower(sender: int, cell: Vector2i, tower_id: String) -> bool:
-	if GameState.game_over or not GameState.is_planning():
+	if GameState.game_over:
 		return false
 	# Строить разрешено только Защитнику, и только из своего дека.
 	if sender != GameState.defender_peer or not GameDB.TOWERS.has(tower_id):
@@ -539,7 +542,7 @@ func _ensure_grid_nodes() -> void:
 func _update_hover_info() -> void:
 	if _hover_info == null:
 		return
-	if _hover_cell == HOVER_INVALID or not active or not GameState.is_planning():
+	if _hover_cell == HOVER_INVALID or not active or GameState.game_over:
 		_hover_info.visible = false
 		return
 	var tower := tower_at(_hover_cell)
@@ -571,8 +574,8 @@ func _update_hover_rect() -> void:
 	if _hover_cell == HOVER_INVALID or not active:
 		_hover_rect.visible = false
 		return
-	# В штурме строить нельзя — сетка гаснет, чтобы не обещать обратное.
-	if not GameState.is_planning():
+	# Сетка живёт в любой фазе: строить можно и во время штурма.
+	if GameState.game_over:
 		_hover_rect.visible = false
 		return
 	var rect := Rect2(Vector2(_hover_cell) * Vector2(cell_size), Vector2(cell_size))

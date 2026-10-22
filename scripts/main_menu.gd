@@ -668,7 +668,9 @@ func _card_text(_id: String, stats: Dictionary) -> String:
 
 func _on_card_toggled(which: String, id: String, card: Button, pressed: bool) -> void:
 	AudioManager.play_sfx("click")
-	if pressed and not LoadoutManager.toggle_in_deck(which, id):
+	# set_in_deck, а не toggle: снятие карточки должно реально убирать её из
+	# деки (раньше вызов шёл только при включении — карта гасла, но оставалась).
+	if not LoadoutManager.set_in_deck(which, id, pressed):
 		# Дек полон: откатываем нажатие, подсказываем.
 		card.set_pressed_no_signal(false)
 		loadout_status.text = "В деке уже %d/%d — сначала снимите другую плитку." \
@@ -676,7 +678,14 @@ func _on_card_toggled(which: String, id: String, card: Button, pressed: bool) ->
 		return
 	LoadoutManager.save_to_disk()
 	_refresh_deck_headers()
-	loadout_status.text = "Сохранено: user://loadout.cfg"
+	var count: int = (LoadoutManager.towers if which == "towers" \
+			else LoadoutManager.units).size()
+	if pressed:
+		loadout_status.text = "В деке %d/%d · сохранено в user://loadout.cfg" % [
+			count, LoadoutManager.DECK_SIZE]
+	else:
+		loadout_status.text = "Убрано из деки · осталось %d/%d" % [
+			count, LoadoutManager.DECK_SIZE]
 
 
 func _refresh_deck_headers() -> void:
