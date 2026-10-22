@@ -59,7 +59,6 @@ var _base_fill: StyleBoxFlat
 var _loadout_panel: PanelContainer
 var _cards_box: HBoxContainer
 var _slots_label: Label
-var _scout_label: Label
 
 # tower_id -> Dictionary с дочерними нодами и параметрами карточки.
 var _card_data: Dictionary = {}
@@ -287,18 +286,20 @@ func _build_loadout() -> void:
 	_cards_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	column.add_child(_cards_box)
 
-	# РАЗВЕДКА: что штурмовик закупил в подготовке. Без этого постройка ПВО
-	# была слепой ставкой; теперь у Защитника есть информация для решения.
-	_scout_label = _label("РАЗВЕДКА: тихо", 9, MUTED, 1)
-	_scout_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	column.add_child(_scout_label)
+	# ПОДСКАЗКА ПО АПГРЕЙДУ (ЭТАП 7): лимитов на количество башен больше нет,
+	# зато клик по своей башне покупает ей следующий уровень.
+	var upgrade_hint := _label(
+		"КЛИК ПО БАШНЕ — УЛУЧШИТЬ (до %d ур.)" % GameDB.TOWER_MAX_LEVEL,
+		9, AMBER, 1)
+	upgrade_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	column.add_child(upgrade_hint)
 
 	var footer := HBoxContainer.new()
 	footer.add_theme_constant_override("separation", 8)
 	footer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	column.add_child(footer)
 
-	var hints := _label("HOVER — RADIUS  ·  LMB — ВЫБОР И ПОСТРОЙКА", 8, MUTED, 1)
+	var hints := _label("LMB — ПОСТРОЙКА / АПГРЕЙД  ·  КОЛЬЦО РАДИУСА — HOVER", 8, MUTED, 1)
 	hints.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hints.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	footer.add_child(hints)
@@ -537,6 +538,17 @@ func _create_card(tower_id: String, order: int) -> Dictionary:
 	}
 
 
+## Максимальный уровень среди построенных башен этого типа (0 — нет башен).
+func _best_level(tower_id: String) -> int:
+	if _map == null:
+		return 0
+	var best := 0
+	for node in _map.get_node("Towers").get_children():
+		if node is Tower and (node as Tower).tower_id == tower_id:
+			best = maxi(best, (node as Tower).level)
+	return best
+
+
 ## Перекраска всех карточек под текущее золото и выбранный слот.
 func _refresh_card_states() -> void:
 	var gold := _current_gold()
@@ -554,19 +566,17 @@ func _refresh_card_states() -> void:
 
 		var status: Label = data["status"]
 		var placed := _map.tower_count(tower_id) if _map != null else 0
-		if placed >= GameDB.MAX_TOWERS_PER_TYPE:
-			status.text = "ЛИМИТ %d/%d" % [placed, GameDB.MAX_TOWERS_PER_TYPE]
+		var best := _best_level(tower_id) if _map != null else 0
+		if not GameState.is_planning():
+			# В штурме строить нельзя, но апгрейд уже стоящих — можно.
+			# Карточки остаются живыми: игрок видит парк и уровень башен.
+			status.text = "ШТУРМ · УР %d" % best
 			status.add_theme_color_override("font_color", MUTED)
-			affordable = false
-		elif not GameState.is_planning():
-			status.text = "ШТУРМ"
-			status.add_theme_color_override("font_color", MUTED)
-			affordable = false
 		elif selected:
-			status.text = "ВЫБРАНО %d/%d" % [placed, GameDB.MAX_TOWERS_PER_TYPE]
+			status.text = "ВЫБРАНО · ×%d" % placed
 			status.add_theme_color_override("font_color", CYAN)
 		elif affordable:
-			status.text = "ГОТОВО %d/%d" % [placed, GameDB.MAX_TOWERS_PER_TYPE]
+			status.text = "ГОТОВО · ×%d" % placed
 			status.add_theme_color_override("font_color", GREEN)
 		else:
 			status.text = "МАЛО КРЕДИТОВ"
@@ -842,14 +852,13 @@ func _fit_loadout_panel() -> void:
 			maxf(TOP_BAR_HEIGHT + 8.0, viewport_size.y - panel_height - 12.0))
 
 
-## «03/08 БАШЕН» — сколько всего слотов занято и сколько уже не поставить.
+## «ПОСТРОЕНО 05» — счётчик башен (лимита больше нет, но видеть парк полезно).
 func _update_slots_label() -> void:
 	if _slots_label == null:
 		return
 	var used := _map.total_towers() if _map != null else 0
-	_slots_label.text = "%02d/%02d БАШЕН" % [used, GameDB.MAX_TOWERS_TOTAL]
-	_slots_label.add_theme_color_override("font_color",
-			AMBER if used >= GameDB.MAX_TOWERS_TOTAL else CYAN)
+	_slots_label.text = "ПОСТРОЕНО %02d" % used
+	_slots_label.add_theme_color_override("font_color", CYAN)
 
 
 func _on_ability_pressed(ability: String) -> void:
@@ -894,39 +903,9 @@ func _on_phase_changed(_round_index: int, _phase: int, _duration: float) -> void
 	_update_slots_label()
 
 
-## Разведка: состав очереди Штурмовика, сгруппированный по типам.
-## «Змей ×8» — прямой сигнал строить ПВО; «Танк ×6» — брать снайперов.
-func _refresh_scout() -> void:
-	if _scout_label == null:
-		return
-	var spawner := get_tree().current_scene.get_node_or_null("Road/UnitSpawner")
-	if spawner == null:
-		return
-	var counts: Dictionary = {}
-	for id in spawner.queue_composition():
-		counts[id] = int(counts.get(id, 0)) + 1
-	if counts.is_empty():
-		_scout_label.text = "РАЗВЕДКА: тихо — штурмовик копит кредиты"
-		_scout_label.add_theme_color_override("font_color", MUTED)
-		return
-	var parts: Array[String] = []
-	var air_threat := false
-	for id in counts:
-		var name := String(GameDB.UNITS[id]["name"]) if GameDB.UNITS.has(id) else String(id)
-		parts.append("%s ×%d" % [name, int(counts[id])])
-		if GameDB.UNITS.has(id) and bool(GameDB.UNITS[id].get("flying", false)):
-			air_threat = true
-	var text := "РАЗВЕДКА: " + ", ".join(parts)
-	if air_threat:
-		text += "  ⚠ ВОЗДУХ"
-	_scout_label.text = text
-	_scout_label.add_theme_color_override("font_color", RED if air_threat else AMBER)
-
-
 func _process(_delta: float) -> void:
 	# Кнопки способностей зависят от HP/фазы — обновляем недорого каждый кадр.
 	_refresh_ability_buttons()
-	_refresh_scout()
 
 
 func _local_peer() -> int:

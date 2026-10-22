@@ -7,10 +7,14 @@ extends PathFollow2D
 ## и правит дрейф; урон принимается только на сервере (take_damage).
 ##
 ## ВИЗУАЛ 2.5D: Body — Sprite2D с полным PNG-артом юнита.
-## Наземные модели получили анимированный нижний stride в шейдере + лёгкий
-## bounce/lean корпуса; тяжёлые шагают медленнее, не сминаясь как резина.
-## Flying парит отдельно. Только Body анимируется: HP и игровые маркеры
-## остаются стабильными относительно дороги.
+## ОРИЕНТАЦИЯ (ЭТАП 7): только два состояния — влево и вправо. Арт каждого
+## юнита нарисован в одном ракурсе (art_faces_right в GameDB), поэтому при
+## движении вправо спрайт зеркалится. По вертикальным участкам дороги юнит
+## НЕ поворачивается: сохраняется последнее горизонтальное направление.
+## Наклоны и вращения корпуса убраны — они читались как «перевёрнутая
+## анимация».
+## Тяжёлые шагают медленнее, не сминаясь как резина; Flying парит отдельно.
+## Только Body анимируется: HP и игровые маркеры остаются стабильными.
 
 const RADIUS := 13.0
 ## Сегментов у «окружностей» (аура, ореол полёта, кольцо замедления).
@@ -30,6 +34,9 @@ const GAIT_SHADER := preload("res://shaders/unit_gait.gdshader")
 var unit_id := ""
 var attacker_peer := 1          # кто отправил юнита
 var spawn_index := 0            # порядковый номер спавна (для отладки/офсета)
+## Уровень типа юнита (1..10), купленный штурмовиком. HP/скорость/урон базе
+## уже посчитаны в stats через GameDB.unit_stats_at().
+var level := 1
 var stats: Dictionary = {}
 var is_dead := false
 
@@ -51,8 +58,9 @@ var slow_factor: float = 1.0    # множитель скорости (1.0 — �
 
 var _bar_pos := Vector2.ZERO   # верхний левый угол полоски HP
 var _bar_width := 0.0          # её полная ширина
-var _body_pivot: Node2D
-var _facing_initialized := false
+## Последнее горизонтальное направление: +1 вправо, -1 влево. Вертикальные
+## участки дороги его не меняют.
+var _facing := -1
 
 @onready var aura_disc: Polygon2D = $AuraDisc
 @onready var aura_ring: Line2D = $AuraRing
@@ -65,10 +73,11 @@ var _facing_initialized := false
 
 
 ## Вызывается спавнером ДО добавления в дерево — одинаково на обоих пирах.
-func setup(p_unit_id: String, p_attacker: int, p_spawn_index: int) -> void:
+func setup(p_unit_id: String, p_attacker: int, p_spawn_index: int, p_level := 1) -> void:
 	unit_id = p_unit_id
 	attacker_peer = p_attacker
 	spawn_index = p_spawn_index
+	level = clampi(p_level, 1, GameDB.UNIT_MAX_LEVEL)
 
 
 func _ready() -> void:
@@ -77,10 +86,9 @@ func _ready() -> void:
 		push_error("Unit: неизвестный тип юнита '%s'" % unit_id)
 		queue_free()
 		return
-	stats = GameDB.UNITS[unit_id]
+	stats = GameDB.unit_stats_at(unit_id, level)
 	hp = stats["hp"]
 	_build_visual()
-	_install_body_pivot()
 	_start_locomotion()
 	# Звук спавна: _ready выполняется на обоих пирах (спавн через
 	# MultiplayerSpawner), поэтому сетевого вызова не требуется.
@@ -98,7 +106,7 @@ func _process(delta: float) -> void:
 	if slow_timer > 0.0 and not stats.get("ignores_slow", false):
 		speed_mult = slow_factor
 	progress += stats["speed"] * speed_mult * delta
-	_orient_to_road(delta)
+	_update_facing()
 	if multiplayer.is_server() and progress_ratio >= 1.0:
 		_reach_base()
 
@@ -251,35 +259,23 @@ func _build_visual() -> void:
 	_update_hp_bar()
 
 
-## Вращаем только BodyPivot по касательной пути: полоска HP, аура и кольца
-## остаются горизонтальными. art_forward задаёт направление «вперёд» в текстуре.
-func _install_body_pivot() -> void:
-	var old_index := body_sprite.get_index()
-	remove_child(body_sprite)
-	_body_pivot = Node2D.new()
-	_body_pivot.name = "BodyPivot"
-	add_child(_body_pivot)
-	move_child(_body_pivot, old_index)
-	_body_pivot.add_child(body_sprite)
-
-
-func _orient_to_road(delta: float) -> void:
-	if _body_pivot == null:
-		return
+## Зеркалит спрайт по горизонтальному направлению движения.
+##
+## Порог 4 px на 10 px пути: на вертикальных участках dx почти нулевой, и
+## последнее направление сохраняется — юнит не «дёргается» влево-вправо на
+## повороте дороги. Арт в PNG у наземных юнитов смотрит влево, у змея — вправо
+## (art_faces_right), поэтому flip_h = (движение вправо) != (арт вправо).
+func _update_facing() -> void:
 	var road := get_parent() as Path2D
 	if road == null or road.curve == null:
 		return
-	var before := road.curve.sample_baked(maxf(progress - 5.0, 0.0))
-	var after := road.curve.sample_baked(progress + 5.0)
-	var direction := road.to_global(after) - road.to_global(before)
-	if direction.length_squared() < 0.001:
-		return
-	var desired := direction.angle() - float(stats.get("art_forward", 0.0))
-	if not _facing_initialized:
-		_body_pivot.rotation = desired
-		_facing_initialized = true
-	else:
-		_body_pivot.rotation = lerp_angle(_body_pivot.rotation, desired, clampf(delta * 10.0, 0.0, 1.0))
+	var before := road.curve.sample_baked(maxf(progress - 6.0, 0.0))
+	var after := road.curve.sample_baked(progress + 6.0)
+	var dx := after.x - before.x
+	if absf(dx) > 4.0:
+		_facing = 1 if dx > 0.0 else -1
+	var art_right := bool(stats.get("art_faces_right", false))
+	body_sprite.flip_h = (_facing > 0) != art_right
 
 
 ## Пружинящий бег: небольшая gait-деформация нижней части текстуры,
@@ -294,12 +290,15 @@ func _start_locomotion() -> void:
 	bob.tween_property(body_sprite, "position:y", bob_amplitude, half_step) \
 			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	if not stats["flying"]:
-		var tilt := create_tween().set_loops()
-		var angle := deg_to_rad(1.8 if heavy else 2.6)
-		var tilt_step := HEAVY_STEP if heavy else RUN_SHAKE_STEP * 2.0
-		tilt.tween_property(body_sprite, "rotation", angle, tilt_step) \
+		# Лёгкое «приседание» вместо поворота корпуса: наклон читался как
+		# перевёрнутая анимация, поэтому вращение убрано полностью.
+		var crouch := create_tween().set_loops()
+		var squash := 0.03 if heavy else 0.045
+		crouch.tween_property(body_sprite, "scale:y", body_sprite.scale.y * (1.0 - squash),
+				HEAVY_STEP if heavy else RUN_SHAKE_STEP * 2.0) \
 				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-		tilt.tween_property(body_sprite, "rotation", -angle, tilt_step) \
+		crouch.tween_property(body_sprite, "scale:y", body_sprite.scale.y,
+				HEAVY_STEP if heavy else RUN_SHAKE_STEP * 2.0) \
 				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	else:
 		var breathe := create_tween().set_loops()

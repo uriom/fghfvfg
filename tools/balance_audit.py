@@ -1,31 +1,35 @@
 #!/usr/bin/env python3
-"""Воспроизводимый балансный аудит Tower Duel.
+"""Воспроизводимый балансный аудит Tower Duel (профиль v3).
 
 Скрипт повторяет расчёты из docs/GDD_AUDIT_RU.md, используя ТОЛЬКО данные,
 которые уже есть в проекте: координаты дороги из scenes/game.tscn, размер
 клетки и зоны строительства из scripts/map.gd, статы из scripts/game_db.gd,
 экономику из autoload/game_state.gd. Godot не требуется.
 
-Два профиля данных:
+Профили данных:
   v1 — снимок, на котором построен аудит (коммит 46079d6): волны, 5 башен,
-       старт 220, матч 600 с. Именно эти числа стоят в таблицах отчёта.
-  v2 — текущий баланс проекта (COMBAT v2 + RAUNDS): матрица урона, броня,
-       приоритеты целей, лимиты 2/тип и 8 всего, BO3-раунды.
+       старт 220, матч 600 с. Только для сверки старых таблиц отчёта.
+  v2 — COMBAT v2: матрица урона, броня, приоритеты, лимиты 2/8, BO3.
+  v3 — текущий проект (ЭТАП 7): лимитов нет, уровни башен и юнитов 1..10,
+       подготовка 10 с, окно спавна 30 с, добивание.
 
 Запуск:
-    python3 tools/balance_audit.py                      # профиль v2, всё
-    python3 tools/balance_audit.py --profile v1 all     # снимок аудита
-    python3 tools/balance_audit.py coverage             # только покрытие пути
-    python3 tools/balance_audit.py economy              # только экономика
-    python3 tools/balance_audit.py sim                  # только симуляция боя
+    python3 tools/balance_audit.py                    # профиль v3, всё
+    python3 tools/balance_audit.py --profile v2 decks
+    python3 tools/balance_audit.py coverage           # только покрытие пути
+    python3 tools/balance_audit.py economy            # экономика раундов
+    python3 tools/balance_audit.py upgrades           # уровни 1..10
+    python3 tools/balance_audit.py sim                # сценарии боя
+    python3 tools/balance_audit.py decks              # «дека × состав атаки»
 
 Зачем: любую правку баланса можно проверить за секунды, без двух ПК и
-матча целиком. Это прототип пункта S8 из бэклога аудита.
+матча целиком.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import math
 import sys
 from dataclasses import dataclass, field
@@ -45,7 +49,7 @@ SAMPLE_STEP = 2.0  # шаг сэмплирования пути, px
 DAMAGE_MATRIX = {
     "ap": {"light": 0.75, "heavy": 1.50, "air": 0.75},
     "he": {"light": 1.25, "heavy": 0.90, "air": 1.00},
-    "fire": {"light": 1.50, "heavy": 0.80, "air": 1.00},   # 0.60 -> 0.80, см. game_db
+    "fire": {"light": 1.50, "heavy": 0.80, "air": 1.00},
     "cryo": {"light": 1.00, "heavy": 0.80, "air": 1.00},
     "arc": {"light": 1.25, "heavy": 0.80, "air": 1.50},
 }
@@ -77,6 +81,16 @@ TOWERS_V2 = {
                   chain=2, chain_range=120.0, chain_falloff=0.6),
 }
 
+# ЭТАП 7: уровни. Те же константы, что в scripts/game_db.gd.
+TOWER_MAX_LEVEL = 10
+UNIT_MAX_LEVEL = 10
+TOWER_DAMAGE_STEP = 0.22
+TOWER_RATE_STEP = 0.03
+TOWER_RANGE_STEP = 0.025
+UNIT_HP_STEP = 0.10
+UNIT_SPEED_STEP = 0.015
+UNIT_DAMAGE_LEVELS = (10,)
+
 UNITS_V1 = {
     "fast": dict(cost=15, hp=30.0, speed=150.0, dmg=1, bounty=10, kill=8),
     "rider": dict(cost=25, hp=55.0, speed=125.0, dmg=1, bounty=16, kill=11),
@@ -91,11 +105,26 @@ UNITS_V2 = {
     "tank": dict(cost=50, hp=225.0, speed=55.0, dmg=3, bounty=25, kill=13, armor="heavy",
                  aura=110.0, aura_reduction=0.25),
     "flying": dict(cost=30, hp=90.0, speed=115.0, dmg=1, bounty=15, kill=8, armor="air"),
-    # speed 46: путь 54,8 с при штурме 60 с — босс успевает дойти. При 36
-    # (путь 70 с) он был мёртвой картой: раунд заканчивался раньше.
+    # speed 46: путь 54,8 с при окне спавна 30 с — босс успевает дойти.
     "boss": dict(cost=150, hp=800.0, speed=46.0, dmg=6, bounty=65, kill=33, armor="heavy",
                  radius=21.0),
 }
+
+# ЭТАП 7 (снятые лимиты постройки + уровни). Отличия от v2:
+#   * башни дороже на ~25 % и слабее на 20 % — иначе без лимитов защитник
+#     заваливает дорогу и штурмовик не пробивается (см. раздел 4);
+#   * юниты живучее на 20 % — компенсация тому же;
+#   * босс 165 кр (в R1 влезает один, а не два).
+TOWERS_V3 = copy.deepcopy(TOWERS_V2)
+UNITS_V3 = copy.deepcopy(UNITS_V2)
+TOWERS_V3["sniper"].update(cost=70, damage=16.0)
+TOWERS_V3["splash"].update(cost=105, damage=21.0)
+TOWERS_V3["frost"].update(cost=70)
+TOWERS_V3["flamer"].update(cost=75, damage=2.8)
+TOWERS_V3["tesla"].update(cost=120, damage=10.5)
+for _unit in UNITS_V3.values():
+    _unit["hp"] *= 1.20
+UNITS_V3["boss"]["cost"] = 165
 
 # autoload/game_state.gd — экономика
 ECONOMY_V1 = dict(base_hp=20, start_gold=120, wave_stipend=100, wave_duration=60.0,
@@ -104,12 +133,19 @@ ECONOMY_V2 = dict(base_hp=15, plan=12.0, assault=60.0, review=8.0,
                   budget_attacker=[200, 320, 480], budget_defender=[240, 100, 100],
                   trickle=1.5, rounds_to_win=2,
                   deploy_interval=0.45, queue=14)
+ECONOMY_V3 = dict(base_hp=15, plan=10.0, spawn_window=30.0, review=0.0,
+                  assault_max=75.0,
+                  budget_attacker=[260, 180, 220], budget_defender=[280, 160, 200],
+                  trickle=2.0, rounds_to_win=2,
+                  deploy_interval=0.45, queue=40)
 
 PROFILES = {
     "v1": dict(towers=TOWERS_V1, units=UNITS_V1, economy=ECONOMY_V1,
-               max_per_type=99, max_total=99),
+               max_levels=False),
     "v2": dict(towers=TOWERS_V2, units=UNITS_V2, economy=ECONOMY_V2,
-               max_per_type=2, max_total=8),
+               max_levels=False),
+    "v3": dict(towers=TOWERS_V3, units=UNITS_V3, economy=ECONOMY_V3,
+               max_levels=True),
 }
 
 # --------------------------------------------------------------- Геометрия пути
@@ -196,6 +232,62 @@ def greedy_cover(cells, radius):
     return chosen, covered
 
 
+# --------------------------------------------------------------- Уровни
+
+
+def tower_stats(profile, tower_id: str, level: int = 1) -> dict:
+    """Статы башни на уровне — копия GameDB.tower_stats_at()."""
+    base = profile["towers"][tower_id]
+    out = dict(base)
+    if not profile.get("max_levels", False):
+        out["level"] = 1
+        return out
+    lv = max(1, min(level, TOWER_MAX_LEVEL))
+    steps = lv - 1
+    out["level"] = lv
+    out["damage"] = base["damage"] * (1.0 + TOWER_DAMAGE_STEP * steps)
+    out["rate"] = base["rate"] * (1.0 + TOWER_RATE_STEP * steps)
+    out["rng"] = base["rng"] * (1.0 + TOWER_RANGE_STEP * steps)
+    return out
+
+
+def tower_upgrade_cost(profile, tower_id: str, level: int) -> int:
+    base = profile["towers"][tower_id]["cost"]
+    return int(math.ceil(base * (0.18 + 0.06 * float(level))))
+
+
+def unit_stats(profile, unit_id: str, level: int = 1) -> dict:
+    base = profile["units"][unit_id]
+    out = dict(base)
+    if not profile.get("max_levels", False):
+        out["level"] = 1
+        return out
+    lv = max(1, min(level, UNIT_MAX_LEVEL))
+    steps = lv - 1
+    out["level"] = lv
+    out["hp"] = base["hp"] * (1.0 + UNIT_HP_STEP * steps)
+    out["speed"] = base["speed"] * (1.0 + UNIT_SPEED_STEP * steps)
+    bonus = sum(1 for milestone in UNIT_DAMAGE_LEVELS if lv >= milestone)
+    out["dmg"] = int(base["dmg"]) + bonus
+    return out
+
+
+def unit_upgrade_cost(profile, unit_id: str, level: int) -> int:
+    base = profile["units"][unit_id]["cost"]
+    return int(math.ceil(base * (0.30 + 0.16 * float(level))))
+
+
+def dps(stats: dict) -> float:
+    """Сырой DPS башни по одной цели (без матрицы)."""
+    return stats["damage"] * stats["rate"]
+
+
+def tower_power(profile, tower_id: str, level: int, cell) -> float:
+    """«Боевая ценность» башни: DPS, умноженный на долю пути под обстрелом."""
+    st = tower_stats(profile, tower_id, level)
+    return dps(st) * coverage_fraction(cell, st["rng"])
+
+
 # --------------------------------------------------------------- Симуляция боя
 
 DT = 0.01
@@ -240,7 +332,7 @@ def _allowed(tower: dict, unit: dict) -> bool:
     return True
 
 
-def _priority_score(tower: dict, unit: SimUnit, unit_stats: dict, units, positions) -> float:
+def _priority_score(tower: dict, unit: SimUnit, units, positions) -> float:
     priority = tower.get("priority", "progress")
     if priority == "strongest":
         return unit.hp
@@ -255,10 +347,10 @@ def _priority_score(tower: dict, unit: SimUnit, unit_stats: dict, units, positio
     return unit.progress
 
 
-def _damage_unit(unit: SimUnit, unit_stats: dict, amount: float, dtype: str | None,
+def _damage_unit(unit: SimUnit, unit_stats_row: dict, amount: float, dtype: str | None,
                  units: list[SimUnit], positions) -> None:
     """Урон с матрицей и аурой танка (как в Unit.take_damage)."""
-    dmg = amount * _mult(dtype, unit_stats.get("armor", "light"))
+    dmg = amount * _mult(dtype, unit_stats_row.get("armor", "light"))
     aura = 0.0
     for other in units:
         if other is unit or not other.alive:
@@ -275,18 +367,22 @@ def _damage_unit(unit: SimUnit, unit_stats: dict, amount: float, dtype: str | No
         unit.alive = False
 
 
-def _spawn_plan(profile: dict, comp) -> list[dict]:
+def _spawn_plan(profile, comp, levels: dict | None = None) -> list[dict]:
     """Разворачивает состав в очередь спавна.
 
     comp — id юнита (моно-волна) либо список [(id, count), ...] / словарь
     {id: count} для смешанного захода. Смешанная очередь чередуется по типам:
-    так игрок и кликает карточки, и так танк не отстаёт от бегунов на 40 секунд.
+    так играет живой штурмовик, и так танк не отстаёт от бегунов на 40 секунд.
     """
-    units = profile["units"]
+    levels = levels or {}
+
+    def row(uid: str) -> dict:
+        return unit_stats(profile, uid, int(levels.get(uid, 1)))
+
     if isinstance(comp, str):
-        return [units[comp]]
+        return [row(comp)]
     pairs = list(comp.items()) if isinstance(comp, dict) else list(comp)
-    buckets = [[units[uid]] * int(n) for uid, n in pairs if int(n) > 0]
+    buckets = [[row(uid)] * int(n) for uid, n in pairs if int(n) > 0]
     plan = []
     while any(buckets):
         for bucket in buckets:
@@ -295,38 +391,45 @@ def _spawn_plan(profile: dict, comp) -> list[dict]:
     return plan
 
 
-def simulate(profile: dict, towers: list[tuple[tuple[float, float], str]],
-             comp, count: int | None = None, gap: float = 0.35) -> SimResult:
+def simulate(profile, towers, comp, count: int | None = None, gap: float = 0.45,
+             levels: dict | None = None) -> SimResult:
     """Дискретная симуляция боя.
 
-    towers — [(cell, tower_id)]. Модель повторяет tower.gd / projectile.gd:
-    выбор цели по priority, кулдаун 1/fire_rate, матрица урона, аура танка,
-    сплеш со спадом, цепь теслы с затуханием, замедление криостаном.
+    towers — [(cell, tower_id, level)] (допускается пара без уровня).
+    Модель повторяет tower.gd / projectile.gd: выбор цели по priority,
+    кулдаун 1/fire_rate, матрица урона, аура танка, сплеш со спадом, цепь
+    теслы с затуханием, замедление криостаном.
     comp — id юнита (тогда count задаёт количество) или смешанный состав.
-    Допущения (осознанные): снаряд летит мгновенно (кроме навеса — там
-    упреждение только уменьшает шанс попадания, см. ниже), башни не
-    перезаряжаются между волнами.
+    levels — уровни типов юнитов (id -> 1..10).
+    Допущения: снаряд летит мгновенно, башни не перезаряжаются между волнами.
     """
-    tower_stats = profile["towers"]
     if isinstance(comp, str) and count is not None:
-        plan = [profile["units"][comp]] * int(count)
+        plan = [unit_stats(profile, comp, int((levels or {}).get(comp, 1)))] * int(count)
     else:
-        plan = _spawn_plan(profile, comp)
+        plan = _spawn_plan(profile, comp, levels)
     total = len(plan)
 
-    cooldowns = [0.0] * len(towers)
+    prepared = []
+    for entry in towers:
+        if len(entry) == 3:
+            cell, tower_id, level = entry
+        else:
+            cell, tower_id = entry
+            level = 1
+        prepared.append((cell, tower_stats(profile, tower_id, int(level))))
+
+    cooldowns = [0.0] * len(prepared)
     units: list[SimUnit] = []
     positions: dict[int, tuple[float, float]] = {}
     sent, next_spawn = 0, 0.0
     t = 0.0
     result = SimResult()
 
-    # Спавн с шагом gap: юниты входят по одному, как в очереди UnitSpawner.
     while t < HORIZON:
         if sent < total and t >= next_spawn:
-            unit_stats = plan[sent]
-            u = SimUnit(0.0, unit_stats["hp"], unit_stats["hp"])
-            u.stats = unit_stats
+            row = plan[sent]
+            u = SimUnit(0.0, row["hp"], row["hp"])
+            u.stats = row
             units.append(u)
             sent += 1
             next_spawn = t + gap
@@ -341,12 +444,10 @@ def simulate(profile: dict, towers: list[tuple[tuple[float, float], str]],
             u.progress += u.stats["speed"] * speed_mult * DT
             positions[id(u)] = sample_path(u.progress)
 
-        for i, (cell, tower_id) in enumerate(towers):
-            tw = tower_stats[tower_id]
+        for i, (cell, tw) in enumerate(prepared):
             cooldowns[i] = max(cooldowns[i] - DT, 0.0)
             if cooldowns[i] > 0.0:
                 continue
-            # Дальность — от клетки до точки на дороге.
             candidates = []
             for u in units:
                 if not u.alive:
@@ -358,7 +459,7 @@ def simulate(profile: dict, towers: list[tuple[tuple[float, float], str]],
             if not candidates:
                 continue
             best = max(candidates,
-                       key=lambda u: (_priority_score(tw, u, u.stats, units, positions),
+                       key=lambda u: (_priority_score(tw, u, units, positions),
                                       u.progress))
             base = tw["damage"]
             dtype = tw.get("dtype")
@@ -397,7 +498,9 @@ def simulate(profile: dict, towers: list[tuple[tuple[float, float], str]],
                     linked.append(nearest)
             else:
                 _damage_unit(best, best.stats, base, dtype, units, positions)
-            if tw.get("slow") and best.alive:
+            # Криостанов не липнет к тем, кто его игнорирует (летающие,
+            # пока в их статах стоит ignores_slow).
+            if tw.get("slow") and best.alive and not best.stats.get("ignores_slow"):
                 best.slow_factor = min(best.slow_factor if best.slow_timer > 0.0 else 1.0,
                                        1.0 - tw["slow"])
                 best.slow_timer = max(best.slow_timer, tw["slow_time"])
@@ -420,6 +523,86 @@ def simulate(profile: dict, towers: list[tuple[tuple[float, float], str]],
 
     result.duration = t
     return result
+
+
+# --------------------------------------------------------------- Оборона
+
+
+def _cover_cells(profile) -> list[tuple[float, float]]:
+    """Клетки полного покрытия под максимальный радиус башен профиля."""
+    radius = max(t["rng"] for t in profile["towers"].values())
+    cells, _ = greedy_cover(legal_cells(), radius)
+    return cells
+
+
+def build_defense(profile, deck, budget, upgrades: bool | None = None,
+                  mono: str | None = None):
+    """Собирает оборону под бюджет — «как играет живой защитник».
+
+    Сначала застройка: типы берутся по кругу из деки, клетка каждый раз та,
+    что даёт максимум НОВОГО покрытия пути под радиус этой башни (так игрок
+    закрывает дыры, а не лепит всё в одну точку). Когда путь закрыт или
+    кредитов на постройку нет — остаток уходит в апгрейды с лучшим приростом
+    силы за кредит.
+    mono — строить только этот тип (поиск лучшего ответа на состав атаки).
+    upgrades=False — только постройка (профили v1/v2 без уровней).
+    Возвращает (towers [(cell, id, level)], spent, leftover).
+    """
+    if upgrades is None:
+        upgrades = bool(profile.get("max_levels", False))
+    available = legal_cells()
+    built: list[list] = []   # [cell, tower_id, level]
+    used: set = set()
+    covered: set = set()
+    spent = 0
+    built_types = 0
+
+    # 1. Застройка: закрываем путь, тип — по кругу из деки.
+    while True:
+        tower_id = mono if mono else deck[built_types % len(deck)]
+        stats = tower_stats(profile, tower_id, 1)
+        cost = int(profile["towers"][tower_id]["cost"])
+        if spent + cost > budget:
+            break
+        best_cell, best_gain = None, -1
+        radius_cov = None
+        for cell in available:
+            if cell in used:
+                continue
+            cover = coverage(cell, stats["rng"])
+            gain = len(cover - covered)
+            if gain > best_gain:
+                best_cell, best_gain, radius_cov = cell, gain, cover
+        if best_cell is None or best_gain <= 0:
+            break   # путь уже накрыт полностью — дальше только апгрейды
+        built.append([best_cell, tower_id, 1])
+        used.add(best_cell)
+        covered |= radius_cov
+        spent += cost
+        built_types += 1
+
+    # 2. Апгрейды: пока есть что качать и чем платить.
+    while upgrades:
+        options = []
+        for entry in built:
+            cell, tower_id, level = entry
+            if level >= TOWER_MAX_LEVEL:
+                continue
+            cost = tower_upgrade_cost(profile, tower_id, level)
+            if spent + cost > budget:
+                continue
+            gain = (tower_power(profile, tower_id, level + 1, cell)
+                    - tower_power(profile, tower_id, level, cell))
+            options.append((gain / cost, cost, entry))
+        if not options:
+            break
+        options.sort(key=lambda o: (o[0], -o[1]), reverse=True)
+        _, cost, entry = options[0]
+        entry[2] += 1
+        spent += cost
+
+    towers = [(cell, tower_id, level) for cell, tower_id, level in built]
+    return towers, spent, budget - spent
 
 
 # --------------------------------------------------------------- Отчёты
@@ -471,19 +654,22 @@ def report_economy(profile):
     print("=" * 78)
 
     if "budget_attacker" in eco:
-        print("Раунды BO3: ПОДГОТОВКА %.0f с / ШТУРМ %.0f с / ИТОГ %.0f с"
-              % (eco["plan"], eco["assault"], eco["review"]))
+        if eco.get("spawn_window"):
+            print(f"Раунд: ПОДГОТОВКА {eco['plan']:.0f} с -> ШТУРМ "
+                  f"(окно спавна {eco['spawn_window']:.0f} с + добивание)")
+        else:
+            print("Раунды: ПОДГОТОВКА %.0f с / ШТУРМ %.0f с / ИТОГ %.0f с"
+                  % (eco["plan"], eco["assault"], eco["review"]))
         print(f"HP базы в раунде: {eco['base_hp']}, побед для матча: {eco['rounds_to_win']}")
+        trickle = eco["trickle"] * (eco.get("spawn_window") or eco["assault"])
         for i in range(3):
-            trickle = eco["trickle"] * eco["assault"]
             print(f"  раунд {i + 1}: защитник {eco['budget_defender'][i]:3d} кр, "
                   f"штурмовик {eco['budget_attacker'][i]:3d} + {trickle:.0f} капельно "
                   f"= {eco['budget_attacker'][i] + trickle:.0f} кр")
         print(f"  суммарно за матч: защитник {sum(eco['budget_defender'])} кр, "
-              f"штурмовик {sum(eco['budget_attacker']) + int(3 * eco['trickle'] * eco['assault'])} кр")
-        # Сколько HP нужно снять штурмовику, чтобы забрать раунд.
+              f"штурмовик {sum(eco['budget_attacker']) + int(3 * trickle)} кр")
         print(f"\nПорог раунда: {eco['base_hp']} урона базе. "
-              f"Цена 1 урона базе по юнитам:")
+              f"Цена 1 урона базе по юнитам (1-й уровень):")
         for name, u in units.items():
             print(f"  {name:7s} {u['cost']:3d} кр / {u['dmg']} урона = "
                   f"{u['cost'] / u['dmg']:5.1f} кр за единицу урона")
@@ -495,49 +681,105 @@ def report_economy(profile):
         total_income = start + (waves - 1) * eco["wave_stipend"]
         print(f"Волн в матче (при лимите {eco['match_limit']:.0f} с): ~{waves}, "
               f"базовый доход {total_income}")
-        last_start = (waves - 1) * (eco["wave_duration"] + eco["wave_break"])
-        print(f"Последняя волна стартует на {last_start:.0f} с и получает "
-              f"{eco['match_limit'] - last_start:.0f} с вместо {eco['wave_duration']:.0f}")
 
-    print("\nБашни: базовый DPS и DPS/кредит по классам брони")
+    print("\nБашни: базовый DPS и DPS/кредит по классам брони (1-й уровень)")
     header = f"  {'tower':8s} {'cost':>4s} {'dps':>6s} {'range':>5s} {'dps/g':>6s}"
     if "dtype" in next(iter(towers.values())):
         header += f" {'лёгк':>6s} {'тяж':>6s} {'возд':>6s}  тип   приоритет"
     print(header)
     for name, t in towers.items():
-        dps = t["damage"] * t["rate"]
-        line = (f"  {name:8s} {t['cost']:4d} {dps:6.1f} {t['rng']:5.0f} "
-                f"{dps / t['cost']:6.3f}")
+        dmg = t["damage"] * t["rate"]
+        line = (f"  {name:8s} {t['cost']:4d} {dmg:6.1f} {t['rng']:5.0f} "
+                f"{dmg / t['cost']:6.3f}")
         if "dtype" in t:
             d = t["dtype"]
-            light = dps * _mult(d, "light") / t["cost"]
-            heavy = dps * _mult(d, "heavy") / t["cost"]
-            air = dps * _mult(d, "air") / t["cost"]
+            light = dmg * _mult(d, "light") / t["cost"]
+            heavy = dmg * _mult(d, "heavy") / t["cost"]
+            air = dmg * _mult(d, "air") / t["cost"]
             air_s = "—" if not t["air"] else f"{air:6.3f}"
             line += f" {light:6.3f} {heavy:6.3f} {air_s:>6s}  {d:4s}  {t['priority']}"
         print(line)
 
-    print("\nЮниты:")
-    header = f"  {'unit':8s} {'cost':>4s} {'hp':>5s} {'spd':>4s} {'dmg':>4s} {'hp/g':>5s} {'g/урон':>7s}"
-    if "armor" in next(iter(units.values())):
-        header += "  броня"
-    print(header)
+    print("\nЮниты (1-й уровень):")
+    print(f"  {'unit':8s} {'cost':>4s} {'hp':>6s} {'speed':>5s} {'dmg':>3s} "
+          f"{'hp/g':>5s} {'g/dmg':>5s}  armor")
     for name, u in units.items():
-        line = (f"  {name:8s} {u['cost']:4d} {u['hp']:5.0f} {u['speed']:4.0f} "
-                f"{u['dmg']:4d} {u['hp'] / u['cost']:5.2f} {u['cost'] / u['dmg']:7.1f}")
-        if "armor" in u:
-            line += f"  {u['armor']}"
-        print(line)
+        print(f"  {name:8s} {u['cost']:4d} {u['hp']:6.0f} {u['speed']:5.0f} "
+              f"{u['dmg']:3d} {u['hp'] / u['cost']:5.2f} "
+              f"{u['cost'] / u['dmg']:5.1f}  {u.get('armor', 'light')}")
 
 
-def _mix(cells, ids):
-    """Собирает оборону из клеток, соблюдая лимиты профиля (2 одного типа)."""
-    return [(cells[i % len(cells)], ids[i]) for i in range(len(ids))]
+def report_upgrades(profile):
+    print()
+    print("=" * 78)
+    print("3. УРОВНИ 1..10")
+    print("=" * 78)
+    if not profile.get("max_levels", False):
+        print("  Профиль без уровней (v1/v2) — отчёт только для v3.")
+        return
+
+    print("\nБашни: суммарная стоимость прокачки и прирост силы")
+    print(f"  {'tower':8s} {'база':>5s} {'до 10':>7s} {'DPS1':>7s} {'DPS10':>7s} "
+          f"{'x':>5s} {'радиус':>7s} {'кр/DPS':>7s}")
+    for name in profile["towers"]:
+        total = sum(tower_upgrade_cost(profile, name, lv)
+                    for lv in range(1, TOWER_MAX_LEVEL))
+        s1 = tower_stats(profile, name, 1)
+        s10 = tower_stats(profile, name, TOWER_MAX_LEVEL)
+        print(f"  {name:8s} {profile['towers'][name]['cost']:5d} {total:7d} "
+              f"{dps(s1):7.1f} {dps(s10):7.1f} {dps(s10) / dps(s1):5.2f} "
+              f"{s10['rng']:7.0f} {total / (dps(s10) - dps(s1)):7.2f}")
+
+    print("\nЦена уровней башни (снайпер / мортира / тесла):")
+    for name in ("sniper", "splash", "tesla"):
+        row = [str(tower_upgrade_cost(profile, name, lv))
+               for lv in range(1, TOWER_MAX_LEVEL)]
+        print(f"  {name:8s} " + " ".join(f"{v:>3s}" for v in row))
+
+    print("\nЮниты: HP / урон базе по уровням")
+    print(f"  {'unit':8s} " + " ".join(f"ур{lv:<2d}" for lv in range(1, UNIT_MAX_LEVEL + 1)))
+    for name in profile["units"]:
+        hp_row = []
+        for lv in range(1, UNIT_MAX_LEVEL + 1):
+            st = unit_stats(profile, name, lv)
+            hp_row.append(f"{st['hp']:.0f}/{st['dmg']}")
+        print(f"  {name:8s} " + " ".join(f"{v:>5s}" for v in hp_row))
+
+    print("\nСтоимость прокачки типа юнита (суммарно до 10-го):")
+    for name in profile["units"]:
+        total = sum(unit_upgrade_cost(profile, name, lv)
+                    for lv in range(1, UNIT_MAX_LEVEL))
+        s1 = unit_stats(profile, name, 1)
+        s10 = unit_stats(profile, name, UNIT_MAX_LEVEL)
+        print(f"  {name:8s} {total:4d} кр  HP x{s10['hp'] / s1['hp']:.2f}  "
+              f"урон базе {s1['dmg']} -> {s10['dmg']}  "
+              f"скорость x{s10['speed'] / s1['speed']:.2f}")
+
+    # «Шире» против «выше»: одинаковый бюджет, разная стратегия.
+    print("\n«Шире или выше»: бюджет 440 кредитов, дека «снайпер + мортира + тесла»")
+    deck = ["sniper", "splash", "tesla"]
+    wide, wide_spent, _ = build_defense(profile, deck, 440, upgrades=False)
+    tall, tall_spent, _ = build_defense(profile, deck, 440, upgrades=True)
+    for label, towers, spent in (("только постройка", wide, wide_spent),
+                                 ("с апгрейдами", tall, tall_spent)):
+        levels = [lv for _, _, lv in towers]
+        print(f"  {label:18s} башен {len(towers):2d}, "
+              f"уровни {levels}, потрачено {spent} кр")
+    cells = _cover_cells(profile)
+    for label, towers in (("только постройка", wide), ("с апгрейдами", tall)):
+        covered = set()
+        for i, (cell, tower_id, level) in enumerate(towers):
+            st = tower_stats(profile, tower_id, level)
+            covered |= coverage(cell, st["rng"])
+        total_dps = sum(dps(tower_stats(profile, t, lv)) for _, t, lv in towers)
+        print(f"  {label:18s} покрытие пути {len(covered) / len(PATH_SAMPLES) * 100:5.1f}%, "
+              f"суммарный DPS {total_dps:6.1f}, клеток занято {len(towers)}")
+    print(f"  клеток полного покрытия всего: {len(cells)}")
 
 
-# ------------------------------------------------------- Матчап дек ----------
+# --------------------------------------------------------------- Сценарии боя
 
-# Деки ровно те, что игрок собирает в меню: 3 типа из 5 (LoadoutManager).
+ATTACKS = ("fast", "rider", "tank", "flying", "boss")
 TOWER_DECKS = {
     "A sn+splash+frost": ["sniper", "splash", "frost"],
     "B sn+splash+tesla": ["sniper", "splash", "tesla"],
@@ -546,24 +788,12 @@ TOWER_DECKS = {
     "E sn+tesla+flamer": ["sniper", "tesla", "flamer"],
 }
 
-# Композиции атаки: чем игрок закупается в раунд (один тип — самый читаемый
-# способ проверить, есть ли у деки дыра).
-ATTACK_DECKS = {
-    "fast": ["fast"],
-    "rider": ["rider"],
-    "tank": ["tank"],
-    "flying": ["flying"],
-    "boss": ["boss"],
-}
-
 # «Стандартный заход» — реалистичная смешанная волна: танки держат удар,
-# конница и змеи просачиваются. Моно-раш из таблицы слабее любой живой игры,
-# поэтому матрица проверяет ещё и микс (доля бюджета на класс).
+# конница и змеи просачиваются. Моно-раш слабее живой игры.
 MIX_SHARES = {"tank": 0.40, "rider": 0.35, "flying": 0.25}
 
 
 def mix_for_budget(profile, budget, shares=None) -> dict:
-    """Состав волны под бюджет: целые юниты по долям бюджета."""
     shares = shares or MIX_SHARES
     comp = {}
     for uid, share in shares.items():
@@ -572,93 +802,34 @@ def mix_for_budget(profile, budget, shares=None) -> dict:
     return {uid: n for uid, n in comp.items() if n > 0}
 
 
-def build_defense(profile, deck, budget):
-    """Собирает оборону из деки под бюджет: по 2 башни каждого типа,
-    на клетки полного покрытия, пока хватает денег."""
-    towers = profile["towers"]
-    cells, _ = greedy_cover(legal_cells(), 200.0)
-    built, spent = [], 0
-    order = deck * profile["max_per_type"]
-    for tower_id in order:
-        if len(built) >= profile["max_total"] or len(built) >= len(cells):
-            break
-        cost = towers[tower_id]["cost"]
-        if spent + cost > budget:
-            continue
-        built.append((cells[len(built)], tower_id))
-        spent += cost
-    return built, spent
-
-
-def report_decks(profile):
-    """Матрица «дека защиты × тип атаки» по раундам.
-
-    Показывает дыры деки: где защитник не пробивается вообще, а где раунд
-    проигрывается одной кнопкой. Это проверка заявлений SPEC-01/02 о
-    контр-плее, а не подбор «красивых» цифр.
-    """
-    econ = profile["economy"]
-    print()
-    print("=" * 78)
-    print("4. МАТЧАП ДЕК (3 башни из 5 × 3 юнита из 5)")
-    print("=" * 78)
-    if "budget_defender" not in econ:
-        print("  Профиль v1 не знает раундов — матрица только для v2.")
-        return
-
-    budgets = []
-    total = 0
-    for i, add in enumerate(econ["budget_defender"]):
-        total += add
-        budgets.append(total)
-    # Атакующий бюджет раунда = разовый бюджет + капельный доход за штурм.
-    atk = [b + int(econ["trickle"] * econ["assault"]) for b in econ["budget_attacker"]]
-    print("  Бюджеты: " + "  ".join(
-        f"R{i + 1} {budgets[i]} vs {atk[i]}" for i in range(len(budgets))))
-    print("  В клетке: «прорвалось/урон базе» (HP базы = %d)." % econ["base_hp"])
-
-    for round_idx, budget in enumerate(budgets):
-        print(f"\n  --- Раунд {round_idx + 1}: оборона {budget} кр, "
-              f"атака {atk[round_idx]} кр ---")
-        header = f"  {'дека':22s}"
-        for unit_id in ATTACK_DECKS:
-            header += f" {unit_id:>10s}"
-        header += "      микс"
-        print(header)
-        mix = mix_for_budget(profile, atk[round_idx])
-        mix_line = " + ".join(f"{n} {uid}" for uid, n in mix.items())
-        print(f"  микс: {mix_line}")
-        for deck_name, deck in TOWER_DECKS.items():
-            towers, spent = build_defense(profile, deck, budget)
-            line = f"  {deck_name:22s}"
-            for unit_id in ATTACK_DECKS:
-                cost = profile["units"][unit_id]["cost"]
-                count = max(1, atk[round_idx] // cost)
-                r = simulate(profile, towers, unit_id, count, 0.45)
-                mark = "!" if r.leaked_hp >= econ["base_hp"] else " "
-                line += f" {r.leaks:2d}/{r.leaked_hp:<2d}{mark}"
-            m = simulate(profile, towers, mix, gap=0.35)
-            mark = "!" if m.leaked_hp >= econ["base_hp"] else " "
-            line += f"   {m.leaks:2d}/{m.leaked_hp:<2d}{mark}"
-            print(line)
-    print("\n  «!» — атака забирает раунд (урон >= HP базы).")
+def round_budgets(profile):
+    eco = profile["economy"]
+    if "budget_defender" not in eco:
+        return [], []
+    total_def, total_atk = 0, 0
+    defs, atks = [], []
+    window = eco.get("spawn_window") or eco["assault"]
+    for i in range(3):
+        total_def += eco["budget_defender"][i]
+        total_atk += eco["budget_attacker"][i]
+        defs.append(total_def)
+        atks.append(total_atk + int(eco["trickle"] * window) * (i + 1))
+    return defs, atks
 
 
 def report_sim(profile, cells):
     print()
     print("=" * 78)
-    print("3. СИМУЛЯЦИЯ БОЯ")
+    print("3. СЦЕНАРИИ БОЯ (типовая оборона, без подбора контр-башни)")
     print("=" * 78)
     radius = max(t["rng"] for t in profile["towers"].values())
     chosen, _ = greedy_cover(cells, radius)
     print("Клетки полного покрытия:", [f"({c[0]:.0f},{c[1]:.0f})" for c in chosen])
 
-    cases = []
-    if "dtype" not in next(iter(profile["towers"].values())):
+    if not profile.get("max_levels", False):
         four = [(c, "sniper") for c in chosen]
         cases = [
             (four, "4 снайпера (200 кр)", "fast", 20, 0.4),
-            (four, "4 снайпера", "fast", 60, 0.4),
             (four, "4 снайпера", "fast", 100, 0.4),
             (four, "4 снайпера", "tank", 5, 0.4),
             (four, "4 снайпера", "flying", 10, 0.4),
@@ -666,44 +837,187 @@ def report_sim(profile, cells):
             (four[:2], "2 снайпера (100 кр)", "fast", 20, 0.4),
             (four[:1], "1 снайпер (50 кр)", "boss", 1, 1.0),
         ]
-    else:
-        # Реальные сборки по раундам. Дека = 3 типа (LoadoutManager), поэтому
-        # оборону собираем из ДЕКИ, а не из произвольного набора башен:
-        # A (снайпер+мортира+крио) — сильный низ, B (снайпер+мортира+тесла) —
-        # ПВО. Это те же числа, что в матрице дек (режим decks).
-        r1a, c1a = build_defense(profile, ["sniper", "splash", "frost"], 240)
-        r2a, c2a = build_defense(profile, ["sniper", "splash", "frost"], 330)
-        r3a, c3a = build_defense(profile, ["sniper", "splash", "frost"], 420)
-        r3b, c3b = build_defense(profile, ["sniper", "splash", "tesla"], 420)
-        cases = [
-            (r1a, f"R1 деки A: 3 башни {c1a}", "fast", 19, 0.45),
-            (r1a, "R1 деки A", "flying", 9, 0.45),
-            (r1a, "R1 деки A", "tank", 6, 0.45),
-            (r2a, f"R2 деки A: 4 башни {c2a}", "fast", 28, 0.45),
-            (r2a, "R2 деки A", "flying", 13, 0.45),
-            (r2a, "R2 деки A", "tank", 8, 0.45),
-            (r3a, f"R3 деки A: 5 башен {c3a}", "fast", 36, 0.45),
-            (r3a, "R3 деки A", "rider", 19, 0.45),
-            (r3a, "R3 деки A", "tank", 11, 0.45),
-            (r3a, "R3 деки A", "boss", 4, 0.45),
-            (r3b, f"R3 деки B (ПВО) {c3b}", "flying", 19, 0.45),
-            (r3b, "R3 деки B (ПВО)", "boss", 4, 0.45),
-            (r3b, "R3 деки B, ПРОРЫВ (залп)", "flying", 14, 0.05),
-            (r3b, "R3 деки B, ПРОРЫВ (залп)", "tank", 14, 0.05),
-        ]
+        for towers, label, unit_id, count, gap in cases:
+            r = simulate(profile, towers, unit_id, count, gap)
+            print(f"  {label:22s} {count:3d} x {unit_id:6s} прорв {r.leaks:3d}  "
+                  f"урон {r.leaked_hp:3d}  бой {r.duration:5.1f} с")
+        return
 
-    print(f"\n  {'оборона':34s} {'юниты':>12s} {'прорв':>6s} {'урон':>5s} {'бой':>6s}")
-    for towers, label, unit, count, gap in cases:
-        r = simulate(profile, towers, unit, count, gap)
-        print(f"  {label:34s} {count:3d} x {unit:6s} {r.leaks:6d} {r.leaked_hp:5d} "
-              f"{r.duration:6.1f}")
+    defs, atks = round_budgets(profile)
+    deck_a = TOWER_DECKS["A sn+splash+frost"]
+    deck_b = TOWER_DECKS["B sn+splash+tesla"]
+    print(f"\n  {'оборона':38s} {'атака':22s} {'прорв':>5s} {'урон':>5s} {'бой':>6s}")
+    for idx, budget in enumerate(defs):
+        for label, deck in (("A sn+splash+frost", deck_a), ("B sn+splash+tesla", deck_b)):
+            towers, spent, _ = build_defense(profile, deck, budget)
+            levels = [lv for _, _, lv in towers]
+            comp = mix_for_budget(profile, atks[idx])
+            r = simulate(profile, towers, comp, gap=0.45)
+            row = f"R{idx + 1} {label} ({len(towers)} башен {spent}, ур {levels})"
+            print(f"  {row:38s} {'микс':22s} {r.leaks:5d} {r.leaked_hp:5d} "
+                  f"{r.duration:6.1f}")
+            for unit_id in ("tank", "flying", "boss"):
+                count = max(1, atks[idx] // profile["units"][unit_id]["cost"])
+                r = simulate(profile, towers, unit_id, count, 0.45)
+                print(f"  {'':38s} {f'{count} x {unit_id}':22s} {r.leaks:5d} "
+                      f"{r.leaked_hp:5d} {r.duration:6.1f}")
+    print("\n  «урон» — суммарный урон базе (HP раунда 15). Здесь оборона строит")
+    print("  деку по кругу, а не подбирает контр-башню под состав: это «как")
+    print("  играет человек, который ставит всё подряд». Худший случай для")
+    print("  защитника — в разделе 4, где он отвечает лучшей башней деки.")
+
+
+def match_damage(profile, unit_id, level, deck, rounds=3):
+    """Урон базе за матч при стратегии «качать тип unit_id до level».
+
+    Золото штурмовика копится между раундами (так же, как в GameState), апгрейд
+    типа покупается один раз и дальше действует на все покупки. Оборона
+    каждый раунд строится закопившимся бюджетом защиты (башни не сносятся).
+    Счёт — сумма min(15, урон) по раундам: перебор сверх 15 не интересен.
+    """
+    eco = profile["economy"]
+    up_total = sum(unit_upgrade_cost(profile, unit_id, lv)
+                   for lv in range(1, level))
+    up_paid = 0
+    gold = 0
+    total = 0
+    def_total = 0
+    for i in range(rounds):
+        gold += eco["budget_attacker"][i] + int(
+            eco["trickle"] * (eco.get("spawn_window") or eco["assault"]))
+        def_total += eco["budget_defender"][i]
+        if up_paid < up_total:
+            pay = min(gold, up_total - up_paid)
+            gold -= pay
+            up_paid += pay
+        towers, _, _ = build_defense(profile, deck, def_total)
+        cost = profile["units"][unit_id]["cost"]
+        count = gold // cost
+        gold -= count * cost
+        effective_level = level if up_paid >= up_total else 1
+        r = simulate(profile, towers, unit_id, int(count), 0.45,
+                     {unit_id: effective_level})
+        total += min(r.leaked_hp, int(eco["base_hp"]))
+    return total
+
+
+def report_levels(profile):
+    """Окупается ли прокачка типа юнита за матч (3 раунда, общий кошелёк)."""
+    print()
+    print("=" * 78)
+    print("5. ЮНИТЫ: ПРОКАЧКА ПРОТИВ МАССЫ (матч из 3 раундов)")
+    print("=" * 78)
+    if not profile.get("max_levels", False):
+        print("  Профиль без уровней (v1/v2) — отчёт только для v3.")
+        return
+    deck = TOWER_DECKS["A sn+splash+frost"]
+    print(f"  Оборона: {deck} (общий бюджет защиты). Атака: один тип юнита.")
+    print("  В клетке — суммарный урон базе за матч (макс 45 = 3 раунда по 15).")
+    header = f"  {'unit':8s}"
+    for lv in range(1, UNIT_MAX_LEVEL + 1):
+        header += f" ур{lv:<2d}"
+    print(header)
+    for unit_id in ATTACKS:
+        line = f"  {unit_id:8s}"
+        results = []
+        for level in range(1, UNIT_MAX_LEVEL + 1):
+            dmg = match_damage(profile, unit_id, level, deck)
+            results.append(dmg)
+            line += f" {dmg:4d}"
+        best = max(range(1, UNIT_MAX_LEVEL + 1), key=lambda lv: results[lv - 1])
+        line += f"   лучший: ур{best}"
+        print(line)
+    print("\n  Если уровень 1 или 2 — лучший, прокачка не окупается;")
+    print("  если лучший — 10, тип обязателен к прокачке (плохой знак).")
+
+    # Та же проверка, но оборона — «B sn+splash+tesla» (у неё есть ПВО).
+    deck_b = TOWER_DECKS["B sn+splash+tesla"]
+    print(f"\n  Контроль: оборона {deck_b}")
+    for unit_id in ATTACKS:
+        results = [match_damage(profile, unit_id, lv, deck_b)
+                   for lv in range(1, UNIT_MAX_LEVEL + 1)]
+        best = max(range(1, UNIT_MAX_LEVEL + 1), key=lambda lv: results[lv - 1])
+        print(f"  {unit_id:8s} ур1..10: " + " ".join(f"{d:2d}" for d in results)
+              + f"   лучший: ур{best}")
+
+
+def sim_income(profile, round_index):
+    eco = profile["economy"]
+    window = eco.get("spawn_window") or eco["assault"]
+    return eco["budget_attacker"][round_index] + int(eco["trickle"] * window)
+
+
+TOWER_MARK = {"sniper": "с", "splash": "м", "frost": "к", "flamer": "о",
+              "tesla": "т"}
+
+
+def best_defense(profile, deck, budget, unit_id, count=None, levels=None, gap=0.45):
+    """Лучший ответ этой деки на конкретный состав атаки.
+
+    Защитник не знает заранее, чем пойдут, но в момент боя видит юнитов и
+    может докидывать башни (лимитов больше нет). Поэтому честная матрица —
+    это минимум прорыва по «миксу» и по монозайстройке каждого типа из деки.
+    Возвращает (урон, прорвалось, чем_держали).
+    """
+    best = None
+    towers, _, _ = build_defense(profile, deck, budget)
+    r = simulate(profile, towers, unit_id, count, gap, levels)
+    best = (r.leaked_hp, r.leaks, "г")
+    for tower_id in deck:
+        towers, _, _ = build_defense(profile, deck, budget, mono=tower_id)
+        r = simulate(profile, towers, unit_id, count, gap, levels)
+        if r.leaked_hp < best[0]:
+            best = (r.leaked_hp, r.leaks, TOWER_MARK[tower_id])
+    return best
+
+
+def report_decks(profile):
+    print()
+    print("=" * 78)
+    print("4. МАТЧАП ДЕК: дека × состав атаки (лучший ответ обороны)")
+    print("=" * 78)
+    if "budget_defender" not in profile["economy"]:
+        print("  Профиль v1 не знает раундов — матрица только для v2/v3.")
+        return
+    defs, atks = round_budgets(profile)
+    print("  Бюджеты (накопленный доход): "
+          + "  ".join(f"R{i + 1} {defs[i]} vs {atks[i]}" for i in range(3)))
+    print("  В клетке: «прорвалось/урон базе» и чем держали: "
+          "с=снайпер м=мортира к=криостан о=огнемёт т=тесла г=микс.")
+    print("  «!» — атака забирает раунд (урон >= 15).")
+    print("  Все юниты 1-го уровня; окупаемость прокачки — в разделе 5.")
+
+    header = f"  {'дека':22s}"
+    for unit_id in ATTACKS:
+        header += f" {unit_id:>11s}"
+    header += "       микс"
+    for ri, budget in enumerate(defs):
+        mix = mix_for_budget(profile, atks[ri])
+        print(f"\n   R{ri + 1} (оборона {budget}, атака {atks[ri]}, "
+              f"микс {'+'.join(f'{n} {u}' for u, n in mix.items())})")
+        print(header)
+        for deck_name, deck in TOWER_DECKS.items():
+            line = f"  {deck_name:22s}"
+            for unit_id in ATTACKS:
+                count = max(1, atks[ri] // profile["units"][unit_id]["cost"])
+                dmg, leaks, mark = best_defense(profile, deck, budget, unit_id, count)
+                flag = "!" if dmg >= profile["economy"]["base_hp"] else " "
+                line += f" {leaks:2d}/{dmg:<2d}{mark}{flag}".rjust(11)
+            dmg, leaks, mark = best_defense(profile, deck, budget, mix)
+            flag = "!" if dmg >= profile["economy"]["base_hp"] else " "
+            line += f"  {leaks:2d}/{dmg:<2d}{mark}{flag}".rjust(11)
+            print(line)
+    print("\n  «!» — атака забирает раунд (урон >= HP базы)."
+          " Прокачка юнитов сюда не входит:")
+    print("  в разделе 5 она оплачивается из того же кошелька и потому честнее.")
 
 
 def main(argv):
     parser = argparse.ArgumentParser(description="Балансный аудит Tower Duel")
     parser.add_argument("mode", nargs="?", default="all",
-                        choices=["all", "coverage", "economy", "sim", "decks"])
-    parser.add_argument("--profile", default="v2", choices=sorted(PROFILES))
+                        choices=["all", "coverage", "economy", "upgrades", "sim",
+                                 "decks", "levels"])
+    parser.add_argument("--profile", default="v3", choices=sorted(PROFILES))
     args = parser.parse_args(argv[1:])
     profile = PROFILES[args.profile]
 
@@ -713,10 +1027,14 @@ def main(argv):
         cells = report_geometry(profile) if args.mode in ("all", "coverage") else legal_cells()
     if args.mode in ("all", "economy"):
         report_economy(profile)
+    if args.mode in ("all", "upgrades"):
+        report_upgrades(profile)
     if args.mode in ("all", "sim"):
         report_sim(profile, cells)
     if args.mode in ("all", "decks"):
         report_decks(profile)
+    if args.mode in ("all", "levels"):
+        report_levels(profile)
     return 0
 
 

@@ -11,6 +11,10 @@ extends Node2D
 ##   2) центр клетки не ближе road_half_width к дороге (не строим на трассе);
 ##   3) клетка ещё не занята башней (словарь occupied).
 ##
+## ЭТАП 7: лимитов «2 на тип / 8 всего» больше нет. Ширина обороны ограничена
+## только клетками и кредитами, а «высота» — уровнями башен (1..10): клик по
+## уже построенной башне покупает ей следующий уровень.
+##
 ## Вариант с TileSet: создайте в TileSet слой Custom Data «buildable» (bool),
 ## проставьте его нужным тайлам и замените is_cell_buildable() на:
 ##   var td := get_cell_tile_data(cell)      # если скрипт на TileMapLayer
@@ -40,6 +44,9 @@ var _road_points := PackedVector2Array()
 var _hover_cell := HOVER_INVALID
 var _grid_root: Node2D
 var _hover_rect: Line2D
+## Подпись у курсора: «СНАЙПЕР · УР 3 → 4 · 33 кр.» — чтобы апгрейд был
+## обнаруживаемым без чтения документации.
+var _hover_info: Label
 
 # --- Тактический предпросмотр радиуса (HUD Защитника) ----------------------
 # Собирается лениво из стандартных нод: Polygon2D-заливка + три Line2D-кольца.
@@ -306,17 +313,15 @@ func cell_to_center(cell: Vector2i) -> Vector2:
 ## Все причины отказа проговариваются игроку (звук + подпись у клетки):
 ## раньше клик по занятой клетке или без денег просто ничего не делал.
 func _request_build(cell: Vector2i) -> void:
+	# Клик по своей башне — покупка следующего уровня (в любой фазе).
+	if occupied.has(cell):
+		_request_upgrade(cell)
+		return
 	if not GameState.is_planning():
 		_deny_build(cell, "ТОЛЬКО В ПОДГОТОВКЕ")
 		return
-	if not is_cell_buildable(cell) or occupied.has(cell):
+	if not is_cell_buildable(cell):
 		_deny_build(cell, "ЗДЕСЬ НЕЛЬЗЯ")
-		return
-	if tower_count(build_tower_id) >= GameDB.MAX_TOWERS_PER_TYPE:
-		_deny_build(cell, "ЛИМИТ %d НА ТИП" % GameDB.MAX_TOWERS_PER_TYPE)
-		return
-	if total_towers() >= GameDB.MAX_TOWERS_TOTAL:
-		_deny_build(cell, "ВСЕ %d СЛОТОВ ЗАНЯТЫ" % GameDB.MAX_TOWERS_TOTAL)
 		return
 	var cost := int(GameDB.TOWERS[build_tower_id]["cost"])
 	var gold := int(GameState.gold.get(multiplayer.get_unique_id(), 0))
@@ -330,6 +335,57 @@ func _request_build(cell: Vector2i) -> void:
 		_server_place_tower(GameState.defender_peer, cell, build_tower_id)
 	else:
 		place_tower_request.rpc_id(1, cell, build_tower_id)   # 1 = сервер (хост)
+
+
+## Клик по построенной башне: купить следующий уровень. Сервер проверяет
+## цену и «не максимум»; клиент заранее объясняет отказ.
+func _request_upgrade(cell: Vector2i) -> void:
+	var tower := tower_at(cell)
+	if tower == null:
+		_deny_build(cell, "ЗДЕСЬ НЕЛЬЗЯ")
+		return
+	if tower.is_max_level():
+		_deny_build(cell, "МАКС. УРОВЕНЬ %d" % GameDB.TOWER_MAX_LEVEL)
+		return
+	var cost := tower.upgrade_cost()
+	var gold := int(GameState.gold.get(multiplayer.get_unique_id(), 0))
+	if gold < cost:
+		_deny_build(cell, "НЕ ХВАТАЕТ %d" % (cost - gold))
+		return
+	if multiplayer.is_server():
+		_server_upgrade_tower(GameState.defender_peer, cell)
+	else:
+		upgrade_tower_request.rpc_id(1, cell)
+
+
+## СЕРВЕР: запрос апгрейда от защитника-клиента.
+@rpc("any_peer", "call_remote", "reliable")
+func upgrade_tower_request(cell: Vector2i) -> void:
+	if not multiplayer.is_server():
+		return
+	_server_upgrade_tower(multiplayer.get_remote_sender_id(), cell)
+
+
+func _server_upgrade_tower(sender: int, cell: Vector2i) -> void:
+	if GameState.game_over or sender != GameState.defender_peer:
+		return
+	var tower := tower_at(cell)
+	if tower == null or tower.is_max_level():
+		return
+	var cost := tower.upgrade_cost()
+	if not GameState.try_spend(sender, cost):
+		return
+	GameState.record_tower_upgrade()
+	AudioManager.play_sfx("build", -3.0, 1.15)
+	tower.sync_level.rpc(tower.level + 1)
+
+
+## Башня в клетке (null, если пусто).
+func tower_at(cell: Vector2i) -> Tower:
+	for node in $Towers.get_children():
+		if node is Tower and (node as Tower).cell == cell:
+			return node as Tower
+	return null
 
 
 ## Отказ с обратной связью: звук + всплывающая подпись над клеткой.
@@ -347,7 +403,7 @@ func tower_count(tower_id: String) -> int:
 	return count
 
 
-## Всего построено башен (лимит MAX_TOWERS_TOTAL).
+## Всего построено башен (лимита нет — счётчик для HUD и статистики).
 func total_towers() -> int:
 	return $Towers.get_child_count()
 
@@ -384,8 +440,7 @@ func place_tower_request(cell: Vector2i, tower_id: String) -> void:
 
 
 ## Серверная валидация и проведение постройки. sender — peer, платящий золото.
-## Строить можно только в ПОДГОТОВКЕ и только в пределах лимитов:
-## 2 башни одного типа, 8 всего (SPEC-02) — иначе дек «3 из 5» ничего не значит.
+## Строить можно только в ПОДГОТОВКЕ; лимитов на количество нет (ЭТАП 7).
 func _server_place_tower(sender: int, cell: Vector2i, tower_id: String) -> void:
 	if not _can_place_tower(sender, cell, tower_id):
 		return
@@ -405,10 +460,6 @@ func _can_place_tower(sender: int, cell: Vector2i, tower_id: String) -> bool:
 		return false
 	if not GameState.defender_towers.has(tower_id):
 		return false   # башни вне дека этого матча запрещены (анти-чит)
-	if tower_count(tower_id) >= GameDB.MAX_TOWERS_PER_TYPE:
-		return false
-	if total_towers() >= GameDB.MAX_TOWERS_TOTAL:
-		return false
 	return not occupied.has(cell) and is_cell_buildable(cell)
 
 
@@ -419,13 +470,15 @@ func _confirm_tower(cell: Vector2i, tower_id: String, owner_peer: int) -> void:
 	AudioManager.play_sfx("build")   # синхронная точка: звук у обоих игроков
 	if multiplayer.is_server():
 		# Клиент получит башню автоматически через MultiplayerSpawner.
-		$TowerSpawner.spawn({"cell": cell, "tower_id": tower_id, "owner": owner_peer})
+		$TowerSpawner.spawn({"cell": cell, "tower_id": tower_id,
+				"owner": owner_peer, "level": 1})
 
 
 ## Вызывается MultiplayerSpawner на всех пирах при спавне башни.
 func _spawn_tower(data: Dictionary) -> Node:
 	var tower: Tower = TOWER_SCENE.instantiate()
-	tower.setup(data["tower_id"], data["owner"], data["cell"], cell_to_center(data["cell"]))
+	tower.setup(data["tower_id"], data["owner"], data["cell"],
+			cell_to_center(data["cell"]), int(data.get("level", 1)))
 	return tower
 
 
@@ -469,6 +522,46 @@ func _ensure_grid_nodes() -> void:
 	_hover_rect.visible = false
 	_grid_root.add_child(_hover_rect)
 
+	_hover_info = Label.new()
+	_hover_info.name = "UpgradeHint"
+	_hover_info.add_theme_font_size_override("font_size", 11)
+	_hover_info.add_theme_color_override("font_outline_color", Color(0, 0.02, 0.05, 0.95))
+	_hover_info.add_theme_constant_override("outline_size", 5)
+	_hover_info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_hover_info.size = Vector2(220.0, 16.0)
+	_hover_info.visible = false
+	_hover_info.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_grid_root.add_child(_hover_info)
+
+
+## Подпись апгрейда у занятой клетки: имя, текущий уровень, цена, хватает ли
+## кредитов. Обновляется вместе с квадратом подсветки.
+func _update_hover_info() -> void:
+	if _hover_info == null:
+		return
+	if _hover_cell == HOVER_INVALID or not active or not GameState.is_planning():
+		_hover_info.visible = false
+		return
+	var tower := tower_at(_hover_cell)
+	if tower == null:
+		_hover_info.visible = false
+		return
+	var name := String(GameDB.TOWERS[tower.tower_id]["name"]).to_upper()
+	if tower.is_max_level():
+		_hover_info.text = "%s · УР %d (МАКС)" % [name, tower.level]
+		_hover_info.add_theme_color_override("font_color", Color(0.75, 0.85, 0.95))
+	else:
+		var cost := tower.upgrade_cost()
+		var gold := int(GameState.gold.get(multiplayer.get_unique_id(), 0))
+		var enough := gold >= cost
+		_hover_info.text = "%s · УР %d → %d · %d кр." % [
+			name, tower.level, tower.level + 1, cost]
+		_hover_info.add_theme_color_override("font_color",
+				Color(0.55, 1.0, 0.65) if enough else Color(1.0, 0.55, 0.55))
+	var centre := cell_to_center(_hover_cell)
+	_hover_info.position = centre + Vector2(-110.0, -40.0)
+	_hover_info.visible = true
+
 
 ## Переставляет квадрат подсветки под _hover_cell и красит его: зелёный —
 ## строить можно, красный — нельзя.
@@ -488,5 +581,14 @@ func _update_hover_rect() -> void:
 		rect.position + rect.size, rect.position + Vector2(0, rect.size.y),
 	])
 	var ok := is_cell_buildable(_hover_cell) and not occupied.has(_hover_cell)
-	_hover_rect.default_color = Color(0.3, 1.0, 0.3, 0.5) if ok else Color(1.0, 0.25, 0.25, 0.5)
+	if occupied.has(_hover_cell):
+		# Занятая клетка — это апгрейд, а не ошибка: подсветка синяя.
+		var tower := tower_at(_hover_cell)
+		ok = tower != null and not tower.is_max_level()
+		_hover_rect.default_color = Color(0.3, 0.8, 1.0, 0.65) if ok \
+				else Color(1.0, 0.25, 0.25, 0.4)
+	else:
+		_hover_rect.default_color = Color(0.3, 1.0, 0.3, 0.5) if ok \
+				else Color(1.0, 0.25, 0.25, 0.5)
 	_hover_rect.visible = true
+	_update_hover_info()

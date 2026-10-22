@@ -530,8 +530,8 @@ func _build_loadout_cards() -> void:
 	_refresh_deck_headers()
 	if loadout_status.text.strip_edges().is_empty():
 		loadout_status.text = ("Наведите курсор на карту, чтобы увидеть характеристики."
-				+ "  ·  В бою каждую башню можно поставить %d раза."
-				% GameDB.MAX_TOWERS_PER_TYPE)
+				+ "  ·  Башни качаются до %d уровня, юниты — тоже."
+				% GameDB.TOWER_MAX_LEVEL)
 
 
 func _make_card(id: String, which: String) -> Button:
@@ -680,11 +680,10 @@ func _on_card_toggled(which: String, id: String, card: Button, pressed: bool) ->
 
 
 func _refresh_deck_headers() -> void:
-	# Лимит «2 на тип» виден ещё в меню: иначе игрок узнаёт о нём только
-	# по красной подписи на поле и считает это багом.
-	tower_header.text = "БАШНИ ЗАЩИТНИКА  ·  %d/%d  ·  до %d построек" % [
+	# Уровни видны ещё в меню: игрок заранее знает, что качать можно в бою.
+	tower_header.text = "БАШНИ ЗАЩИТНИКА  ·  %d/%d  ·  апгрейд до %d ур." % [
 		LoadoutManager.towers.size(), LoadoutManager.DECK_SIZE,
-		LoadoutManager.tower_capacity(),
+		GameDB.TOWER_MAX_LEVEL,
 	]
 	unit_header.text = "ЮНИТЫ ШТУРМОВИКА  ·  %d/%d" % [LoadoutManager.units.size(),
 			LoadoutManager.DECK_SIZE]
