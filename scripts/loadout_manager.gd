@@ -92,6 +92,26 @@ func deck_full(which: String) -> bool:
 	return deck.size() >= DECK_SIZE
 
 
+## Привести деку к нужному состоянию: «id в деке» == enabled.
+## Возвращает false, только если включить нельзя — в деке уже DECK_SIZE карт.
+##
+## ЭТАП 8: раньше меню вызывало toggle_in_deck ТОЛЬКО при включении плитки
+## (`if pressed and not toggle...`), поэтому снять карточку было невозможно:
+## визуально она гасла, а в деке оставалась, и следующий клик упирался в
+## «дек полон». Теперь меню просит «сделай вот так», а не «переключи».
+func set_in_deck(which: String, id: String, enabled: bool) -> bool:
+	var deck: Array[String] = towers if which == "towers" else units
+	if deck.has(id) == enabled:
+		return true
+	if not enabled:
+		deck.erase(id)
+		return true
+	if deck.size() >= DECK_SIZE:
+		return false
+	deck.append(id)
+	return true
+
+
 ## Переключить id в/из дека. Возвращает true, если изменение принято.
 func toggle_in_deck(which: String, id: String) -> bool:
 	var deck: Array[String] = towers if which == "towers" else units

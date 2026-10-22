@@ -47,7 +47,7 @@ SAMPLE_STEP = 2.0  # шаг сэмплирования пути, px
 
 # Матрица урона (scripts/game_db.gd, COMBAT v2). В v1 матрицы не было.
 DAMAGE_MATRIX = {
-    "ap": {"light": 0.75, "heavy": 1.50, "air": 0.75},
+    "ap": {"light": 0.75, "heavy": 1.50, "air": 0.90},
     "he": {"light": 1.25, "heavy": 0.90, "air": 1.00},
     "fire": {"light": 1.50, "heavy": 0.80, "air": 1.00},
     "cryo": {"light": 1.00, "heavy": 0.80, "air": 1.00},
@@ -126,6 +126,15 @@ for _unit in UNITS_V3.values():
     _unit["hp"] *= 1.20
 UNITS_V3["boss"]["cost"] = 165
 
+# ЭТАП 8: ПВО есть у всех башен, кроме мортиры (плейтест: «почему змей
+# неуязвим для половины парка?»). Воздух перестал быть отдельным классом
+# обороны, поэтому змей подорожал до 35 (проверка — раздел 4).
+TOWERS_V4 = copy.deepcopy(TOWERS_V3)
+TOWERS_V4["frost"]["air"] = True
+TOWERS_V4["flamer"]["air"] = True
+UNITS_V4 = copy.deepcopy(UNITS_V3)
+UNITS_V4["flying"]["cost"] = 35
+
 # autoload/game_state.gd — экономика
 ECONOMY_V1 = dict(base_hp=20, start_gold=120, wave_stipend=100, wave_duration=60.0,
                   wave_break=5.0, match_limit=600.0)
@@ -138,6 +147,13 @@ ECONOMY_V3 = dict(base_hp=15, plan=10.0, spawn_window=30.0, review=0.0,
                   budget_attacker=[260, 180, 220], budget_defender=[280, 160, 200],
                   trickle=2.0, rounds_to_win=2,
                   deploy_interval=0.45, queue=40)
+# ЭТАП 8: 10 волн, зазор спавна 0,2 с, ПВО у всех башен кроме мортиры.
+ECONOMY_V4 = dict(base_hp=15, plan=10.0, spawn_window=30.0, review=0.0,
+                  assault_max=75.0,
+                  budget_attacker=[260, 340, 440, 560, 720, 900, 1140, 1440, 1820, 2300],
+                  budget_defender=[280, 72, 92, 112, 148, 176, 220, 276, 348, 436],
+                  trickle=2.0, rounds_to_win=6,
+                  deploy_interval=0.20, queue=40)
 
 PROFILES = {
     "v1": dict(towers=TOWERS_V1, units=UNITS_V1, economy=ECONOMY_V1,
@@ -146,7 +162,11 @@ PROFILES = {
                max_levels=False),
     "v3": dict(towers=TOWERS_V3, units=UNITS_V3, economy=ECONOMY_V3,
                max_levels=True),
+    "v4": dict(towers=TOWERS_V4, units=UNITS_V4, economy=ECONOMY_V4,
+               max_levels=True),
 }
+
+DEFAULT_PROFILE = "v4"
 
 # --------------------------------------------------------------- Геометрия пути
 
@@ -290,8 +310,12 @@ def tower_power(profile, tower_id: str, level: int, cell) -> float:
 
 # --------------------------------------------------------------- Симуляция боя
 
-DT = 0.01
+## Шаг симуляции. 20 мс — компромисс: такую же точность давал 10 мс, но
+## прогон 10 волн x 5 дек x 4 варианта обороны на 10 мс занимал 6 минут.
+DT = 0.025
 HORIZON = 200.0
+## Потолок одновременно живых юнитов (как MAX_ALIVE в unit_spawner.gd).
+MAX_ALIVE = 70
 
 
 @dataclass
@@ -391,7 +415,12 @@ def _spawn_plan(profile, comp, levels: dict | None = None) -> list[dict]:
     return plan
 
 
-def simulate(profile, towers, comp, count: int | None = None, gap: float = 0.45,
+def gap_of(profile) -> float:
+    """Зазор между юнитами очереди. ЭТАП 8 — 0,2 с, в старых профилях 0,45."""
+    return float(profile["economy"].get("deploy_interval", 0.45))
+
+
+def simulate(profile, towers, comp, count: int | None = None, gap: float | None = None,
              levels: dict | None = None) -> SimResult:
     """Дискретная симуляция боя.
 
@@ -403,11 +432,17 @@ def simulate(profile, towers, comp, count: int | None = None, gap: float = 0.45,
     levels — уровни типов юнитов (id -> 1..10).
     Допущения: снаряд летит мгновенно, башни не перезаряжаются между волнами.
     """
+    if gap is None:
+        gap = gap_of(profile)
     if isinstance(comp, str) and count is not None:
         plan = [unit_stats(profile, comp, int((levels or {}).get(comp, 1)))] * int(count)
     else:
         plan = _spawn_plan(profile, comp, levels)
-    total = len(plan)
+    # Физический потолок раунда: за окно спавна при зазоре gap успевает
+    # выйти не больше units_cap юнитов (в игре — ещё и очередь 40 / живых 70).
+    cap = int(float(profile["economy"].get("spawn_window", 60.0)) / gap) + 1
+    total = min(len(plan), cap)
+    plan = plan[:total]
 
     prepared = []
     for entry in towers:
@@ -426,7 +461,8 @@ def simulate(profile, towers, comp, count: int | None = None, gap: float = 0.45,
     result = SimResult()
 
     while t < HORIZON:
-        if sent < total and t >= next_spawn:
+        alive_now = sum(1 for u in units if u.alive)
+        if sent < total and t >= next_spawn and alive_now < MAX_ALIVE:
             row = plan[sent]
             u = SimUnit(0.0, row["hp"], row["hp"])
             u.stats = row
@@ -535,74 +571,112 @@ def _cover_cells(profile) -> list[tuple[float, float]]:
     return cells
 
 
+## Кэш сборки обороны: матрица дек строит одну и ту же оборону под шесть
+## составов атаки, и без кэша половина прогона уходила на повторный set-cover.
+_DEF_CACHE: dict = {}
+
+
 def build_defense(profile, deck, budget, upgrades: bool | None = None,
                   mono: str | None = None):
-    """Собирает оборону под бюджет — «как играет живой защитник».
+    """Собирает оборону под бюджет — «как играет расчётливый защитник».
 
-    Сначала застройка: типы берутся по кругу из деки, клетка каждый раз та,
-    что даёт максимум НОВОГО покрытия пути под радиус этой башни (так игрок
-    закрывает дыры, а не лепит всё в одну точку). Когда путь закрыт или
-    кредитов на постройку нет — остаток уходит в апгрейды с лучшим приростом
-    силы за кредит.
-    mono — строить только этот тип (поиск лучшего ответа на состав атаки).
+    На каждом шаге сравниваются две покупки по «силе за кредит»:
+      * новая башня на свободной клетке (клетка — та, где башня сильнее
+        всего: DPS x доля пути под обстрелом);
+      * апгрейд уже стоящей башни.
+    Так модель сама выбирает «шире или выше», а не диктует это извне.
+    mono — строить/качать только этот тип (поиск лучшего ответа на состав).
     upgrades=False — только постройка (профили v1/v2 без уровней).
     Возвращает (towers [(cell, id, level)], spent, leftover).
     """
     if upgrades is None:
         upgrades = bool(profile.get("max_levels", False))
+    key = (id(profile), tuple(deck), int(budget), bool(upgrades), mono)
+    if key in _DEF_CACHE:
+        return _DEF_CACHE[key]
     available = legal_cells()
     built: list[list] = []   # [cell, tower_id, level]
     used: set = set()
     covered: set = set()
     spent = 0
-    built_types = 0
 
-    # 1. Застройка: закрываем путь, тип — по кругу из деки.
-    while True:
-        tower_id = mono if mono else deck[built_types % len(deck)]
-        stats = tower_stats(profile, tower_id, 1)
+    # Сначала — по одной башне КАЖДОГО типа из деки: иначе деки с общим
+    # дешёвым ядром (A и B делят снайпера с мортирой) собирались в одну и ту
+    # же оборону, и матрица «дека × состав» теряла смысл.
+    for tower_id in ([mono] if mono else deck):
         cost = int(profile["towers"][tower_id]["cost"])
-        if spent + cost > budget:
-            break
-        best_cell, best_gain = None, -1
-        radius_cov = None
+        if spent + cost > budget or not available:
+            continue
+        stats = tower_stats(profile, tower_id, 1)
+        best_cell, best_score = None, -1.0
         for cell in available:
             if cell in used:
                 continue
-            cover = coverage(cell, stats["rng"])
-            gain = len(cover - covered)
-            if gain > best_gain:
-                best_cell, best_gain, radius_cov = cell, gain, cover
-        if best_cell is None or best_gain <= 0:
-            break   # путь уже накрыт полностью — дальше только апгрейды
+            score = tower_power(profile, tower_id, 1, cell)
+            if score > best_score:
+                best_cell, best_score = cell, score
+        if best_cell is None:
+            break
         built.append([best_cell, tower_id, 1])
         used.add(best_cell)
-        covered |= radius_cov
+        covered |= coverage(best_cell, stats["rng"])
         spent += cost
-        built_types += 1
 
-    # 2. Апгрейды: пока есть что качать и чем платить.
-    while upgrades:
+    while True:
         options = []
-        for entry in built:
-            cell, tower_id, level = entry
-            if level >= TOWER_MAX_LEVEL:
-                continue
-            cost = tower_upgrade_cost(profile, tower_id, level)
+        for tower_id in ([mono] if mono else deck):
+            cost = int(profile["towers"][tower_id]["cost"])
             if spent + cost > budget:
                 continue
-            gain = (tower_power(profile, tower_id, level + 1, cell)
-                    - tower_power(profile, tower_id, level, cell))
-            options.append((gain / cost, cost, entry))
+            best_cell, best_score = None, -1.0
+            for cell in available:
+                if cell in used:
+                    continue
+                stats = tower_stats(profile, tower_id, 1)
+                cover = coverage(cell, stats["rng"])
+                # Ценность клетки: её DPS на пути плюс бонус за НОВЫЙ участок
+                # пути. Бонус не даёт свалить все башни в одну «зону смерти»
+                # и оставить половину дороги без обстрела.
+                new_fraction = len(cover - covered) / max(len(cover), 1)
+                score = tower_power(profile, tower_id, 1, cell) * (1.0 + 2.0 * new_fraction)
+                if score > best_score:
+                    best_cell, best_score = cell, score
+            if best_cell is not None:
+                options.append((best_score / cost, "build", tower_id, best_cell, cost))
+        if upgrades:
+            for entry in built:
+                cell, tower_id, level = entry
+                if mono and tower_id != mono:
+                    continue
+                if level >= TOWER_MAX_LEVEL:
+                    continue
+                cost = tower_upgrade_cost(profile, tower_id, level)
+                if spent + cost > budget:
+                    continue
+                gain = (tower_power(profile, tower_id, level + 1, cell)
+                        - tower_power(profile, tower_id, level, cell))
+                options.append((gain / cost, "upgrade", tower_id, cell, cost))
         if not options:
             break
-        options.sort(key=lambda o: (o[0], -o[1]), reverse=True)
-        _, cost, entry = options[0]
-        entry[2] += 1
+        # Максимум силы за кредит; при равенстве — сначала постройка.
+        options.sort(key=lambda o: (o[0], 1 if o[1] == "build" else 0), reverse=True)
+        value, kind, tower_id, cell, cost = options[0]
+        if value <= 0.0:
+            break
         spent += cost
-
+        if kind == "build":
+            built.append([cell, tower_id, 1])
+            used.add(cell)
+            covered |= coverage(cell, tower_stats(profile, tower_id, 1)["rng"])
+        else:
+            for entry in built:
+                if entry[0] == cell and entry[1] == tower_id:
+                    entry[2] += 1
+                    break
     towers = [(cell, tower_id, level) for cell, tower_id, level in built]
-    return towers, spent, budget - spent
+    result = (towers, spent, budget - spent)
+    _DEF_CACHE[key] = result
+    return result
 
 
 # --------------------------------------------------------------- Отчёты
@@ -662,12 +736,17 @@ def report_economy(profile):
                   % (eco["plan"], eco["assault"], eco["review"]))
         print(f"HP базы в раунде: {eco['base_hp']}, побед для матча: {eco['rounds_to_win']}")
         trickle = eco["trickle"] * (eco.get("spawn_window") or eco["assault"])
-        for i in range(3):
-            print(f"  раунд {i + 1}: защитник {eco['budget_defender'][i]:3d} кр, "
-                  f"штурмовик {eco['budget_attacker'][i]:3d} + {trickle:.0f} капельно "
+        total = len(eco["budget_attacker"])
+        run = 0
+        for i in range(total):
+            run += eco["budget_defender"][i]
+            print(f"  волна {i + 1:2d}: защитник {eco['budget_defender'][i]:3d} кр "
+                  f"(накоплено {run:4d}), штурмовик "
+                  f"{eco['budget_attacker'][i]:3d} + {trickle:.0f} капельно "
                   f"= {eco['budget_attacker'][i] + trickle:.0f} кр")
-        print(f"  суммарно за матч: защитник {sum(eco['budget_defender'])} кр, "
-              f"штурмовик {sum(eco['budget_attacker']) + int(3 * trickle)} кр")
+        print(f"  суммарно за матч ({total} волн): защитник "
+              f"{sum(eco['budget_defender'])} кр, штурмовик "
+              f"{sum(eco['budget_attacker']) + int(total * trickle)} кр")
         print(f"\nПорог раунда: {eco['base_hp']} урона базе. "
               f"Цена 1 урона базе по юнитам (1-й уровень):")
         for name, u in units.items():
@@ -806,14 +885,18 @@ def round_budgets(profile):
     eco = profile["economy"]
     if "budget_defender" not in eco:
         return [], []
-    total_def, total_atk = 0, 0
+    # Асимметрия накопления: башни защитника переживают волны, поэтому его
+    # бюджет копится. Юниты штурмовика умирают каждую волну, поэтому его
+    # касса — это доход ТЕКУЩЕЙ волны (иначе модель предполагала бы, что он
+    # 9 волн копит и в 10-й выпускает 150 змеев — так никто не играет).
+    total_def = 0
     defs, atks = [], []
     window = eco.get("spawn_window") or eco["assault"]
-    for i in range(3):
+    trickle = int(eco["trickle"] * window)
+    for i in range(len(eco["budget_defender"])):
         total_def += eco["budget_defender"][i]
-        total_atk += eco["budget_attacker"][i]
         defs.append(total_def)
-        atks.append(total_atk + int(eco["trickle"] * window) * (i + 1))
+        atks.append(eco["budget_attacker"][i] + trickle)
     return defs, atks
 
 
@@ -852,13 +935,13 @@ def report_sim(profile, cells):
             towers, spent, _ = build_defense(profile, deck, budget)
             levels = [lv for _, _, lv in towers]
             comp = mix_for_budget(profile, atks[idx])
-            r = simulate(profile, towers, comp, gap=0.45)
+            r = simulate(profile, towers, comp)
             row = f"R{idx + 1} {label} ({len(towers)} башен {spent}, ур {levels})"
             print(f"  {row:38s} {'микс':22s} {r.leaks:5d} {r.leaked_hp:5d} "
                   f"{r.duration:6.1f}")
             for unit_id in ("tank", "flying", "boss"):
                 count = max(1, atks[idx] // profile["units"][unit_id]["cost"])
-                r = simulate(profile, towers, unit_id, count, 0.45)
+                r = simulate(profile, towers, unit_id, count)
                 print(f"  {'':38s} {f'{count} x {unit_id}':22s} {r.leaks:5d} "
                       f"{r.leaked_hp:5d} {r.duration:6.1f}")
     print("\n  «урон» — суммарный урон базе (HP раунда 15). Здесь оборона строит")
@@ -867,7 +950,20 @@ def report_sim(profile, cells):
     print("  защитника — в разделе 4, где он отвечает лучшей башней деки.")
 
 
-def match_damage(profile, unit_id, level, deck, rounds=3):
+def defense_by_round(profile, deck, rounds=None):
+    """Оборона на каждую волну (кэш: башни переживают волны, пересчёт дорог)."""
+    eco = profile["economy"]
+    if rounds is None:
+        rounds = len(eco["budget_attacker"])
+    out = []
+    total = 0
+    for i in range(min(rounds, len(eco["budget_attacker"]))):
+        total += eco["budget_defender"][i]
+        out.append(build_defense(profile, deck, total)[0])
+    return out
+
+
+def match_damage(profile, unit_id, level, deck, rounds=None, defenses=None):
     """Урон базе за матч при стратегии «качать тип unit_id до level».
 
     Золото штурмовика копится между раундами (так же, как в GameState), апгрейд
@@ -876,13 +972,17 @@ def match_damage(profile, unit_id, level, deck, rounds=3):
     Счёт — сумма min(15, урон) по раундам: перебор сверх 15 не интересен.
     """
     eco = profile["economy"]
+    if rounds is None:
+        rounds = len(eco["budget_attacker"])
     up_total = sum(unit_upgrade_cost(profile, unit_id, lv)
                    for lv in range(1, level))
     up_paid = 0
     gold = 0
     total = 0
     def_total = 0
-    for i in range(rounds):
+    if defenses is None:
+        defenses = defense_by_round(profile, deck, rounds)
+    for i in range(len(defenses)):
         gold += eco["budget_attacker"][i] + int(
             eco["trickle"] * (eco.get("spawn_window") or eco["assault"]))
         def_total += eco["budget_defender"][i]
@@ -890,12 +990,12 @@ def match_damage(profile, unit_id, level, deck, rounds=3):
             pay = min(gold, up_total - up_paid)
             gold -= pay
             up_paid += pay
-        towers, _, _ = build_defense(profile, deck, def_total)
+        towers = defenses[i]
         cost = profile["units"][unit_id]["cost"]
         count = gold // cost
         gold -= count * cost
         effective_level = level if up_paid >= up_total else 1
-        r = simulate(profile, towers, unit_id, int(count), 0.45,
+        r = simulate(profile, towers, unit_id, int(count), None,
                      {unit_id: effective_level})
         total += min(r.leaked_hp, int(eco["base_hp"]))
     return total
@@ -911,8 +1011,10 @@ def report_levels(profile):
         print("  Профиль без уровней (v1/v2) — отчёт только для v3.")
         return
     deck = TOWER_DECKS["A sn+splash+frost"]
+    defenses = defense_by_round(profile, deck)
     print(f"  Оборона: {deck} (общий бюджет защиты). Атака: один тип юнита.")
-    print("  В клетке — суммарный урон базе за матч (макс 45 = 3 раунда по 15).")
+    print("  В клетке — суммарный урон базе за матч (15 HP за волну x 10 волн = 150).")
+    print("  Оборона здесь — ОБЫЧНЫЙ микс деки, без подбора контр-башни под состав:")
     header = f"  {'unit':8s}"
     for lv in range(1, UNIT_MAX_LEVEL + 1):
         header += f" ур{lv:<2d}"
@@ -921,20 +1023,22 @@ def report_levels(profile):
         line = f"  {unit_id:8s}"
         results = []
         for level in range(1, UNIT_MAX_LEVEL + 1):
-            dmg = match_damage(profile, unit_id, level, deck)
+            dmg = match_damage(profile, unit_id, level, deck, defenses=defenses)
             results.append(dmg)
             line += f" {dmg:4d}"
         best = max(range(1, UNIT_MAX_LEVEL + 1), key=lambda lv: results[lv - 1])
         line += f"   лучший: ур{best}"
         print(line)
-    print("\n  Если уровень 1 или 2 — лучший, прокачка не окупается;")
-    print("  если лучший — 10, тип обязателен к прокачке (плохой знак).")
+    print("\n  Это верхняя оценка штурмовика: против конкретного состава защитник")
+    print("  ставит контр-башню (раздел 4) и цифры падают на порядок.")
+    print("  Прокачка окупается, если лучший уровень 5..10, а не 1..2.")
 
     # Та же проверка, но оборона — «B sn+splash+tesla» (у неё есть ПВО).
     deck_b = TOWER_DECKS["B sn+splash+tesla"]
+    defenses_b = defense_by_round(profile, deck_b)
     print(f"\n  Контроль: оборона {deck_b}")
     for unit_id in ATTACKS:
-        results = [match_damage(profile, unit_id, lv, deck_b)
+        results = [match_damage(profile, unit_id, lv, deck_b, defenses=defenses_b)
                    for lv in range(1, UNIT_MAX_LEVEL + 1)]
         best = max(range(1, UNIT_MAX_LEVEL + 1), key=lambda lv: results[lv - 1])
         print(f"  {unit_id:8s} ур1..10: " + " ".join(f"{d:2d}" for d in results)
@@ -951,7 +1055,7 @@ TOWER_MARK = {"sniper": "с", "splash": "м", "frost": "к", "flamer": "о",
               "tesla": "т"}
 
 
-def best_defense(profile, deck, budget, unit_id, count=None, levels=None, gap=0.45):
+def best_defense(profile, deck, budget, unit_id, count=None, levels=None, gap=None):
     """Лучший ответ этой деки на конкретный состав атаки.
 
     Защитник не знает заранее, чем пойдут, но в момент боя видит юнитов и
@@ -959,11 +1063,12 @@ def best_defense(profile, deck, budget, unit_id, count=None, levels=None, gap=0.
     это минимум прорыва по «миксу» и по монозайстройке каждого типа из деки.
     Возвращает (урон, прорвалось, чем_держали).
     """
-    best = None
     towers, _, _ = build_defense(profile, deck, budget)
     r = simulate(profile, towers, unit_id, count, gap, levels)
     best = (r.leaked_hp, r.leaks, "г")
     for tower_id in deck:
+        if best[0] == 0:
+            break   # ниже нуля некуда — дальше варианты не нужны
         towers, _, _ = build_defense(profile, deck, budget, mono=tower_id)
         r = simulate(profile, towers, unit_id, count, gap, levels)
         if r.leaked_hp < best[0]:
@@ -998,26 +1103,159 @@ def report_decks(profile):
         print(header)
         for deck_name, deck in TOWER_DECKS.items():
             line = f"  {deck_name:22s}"
+            row_best = 0
             for unit_id in ATTACKS:
                 count = max(1, atks[ri] // profile["units"][unit_id]["cost"])
                 dmg, leaks, mark = best_defense(profile, deck, budget, unit_id, count)
+                row_best = max(row_best, dmg)
                 flag = "!" if dmg >= profile["economy"]["base_hp"] else " "
                 line += f" {leaks:2d}/{dmg:<2d}{mark}{flag}".rjust(11)
             dmg, leaks, mark = best_defense(profile, deck, budget, mix)
+            row_best = max(row_best, dmg)
             flag = "!" if dmg >= profile["economy"]["base_hp"] else " "
             line += f"  {leaks:2d}/{dmg:<2d}{mark}{flag}".rjust(11)
+            # Раздел 6 переиспользует худшую линию этой волны как «обычную игру».
+            _DECK_BEST[(id(profile), deck_name, ri + 1)] = row_best
             print(line)
     print("\n  «!» — атака забирает раунд (урон >= HP базы)."
           " Прокачка юнитов сюда не входит:")
     print("  в разделе 5 она оплачивается из того же кошелька и потому честнее.")
 
 
+## Лучший урон деки по волнам при обычной игре (заполняется в report_decks).
+## Ключ — (id(профиля), имя деки, волна). Раздел 6 переиспользует эти числа,
+## чтобы не пересчитывать 200 боёв заново.
+_DECK_BEST: dict = {}
+
+
+def _normal_best(profile, deck, deck_name, wave):
+    """Обычная игра: дека отвечает лучшей башней на доход этой волны."""
+    key = (id(profile), deck_name, wave)
+    if key in _DECK_BEST:
+        return _DECK_BEST[key]
+    eco = profile["economy"]
+    window = eco.get("spawn_window") or eco["assault"]
+    gold = eco["budget_attacker"][wave - 1] + int(eco["trickle"] * window)
+    budget = sum(eco["budget_defender"][:wave])
+    best = 0
+    for tag, comp in _attack_comps(profile, gold):
+        dmg, _, _ = best_defense(profile, deck, budget, comp)
+        best = max(best, dmg)
+    _DECK_BEST[key] = best
+    return best
+
+
+def _attack_comps(profile, gold):
+    out = [("микс", mix_for_budget(profile, gold))]
+    for unit_id in ("boss", "flying", "tank"):
+        cost = profile["units"][unit_id]["cost"]
+        out.append((unit_id, {unit_id: gold // cost}))
+    return [(tag, {u: n for u, n in comp.items() if n > 0})
+            for tag, comp in out if any(comp.values())]
+
+
+def _hoard_damage(profile, deck, budget, start, wave):
+    """Урон дебюта: копим с волны start, вкладываем всё в волну wave."""
+    eco = profile["economy"]
+    window = eco.get("spawn_window") or eco["assault"]
+    trickle = int(eco["trickle"] * window)
+    gold = sum(eco["budget_attacker"][start - 1:wave]) + trickle * (wave - start + 1)
+    best = 0
+    for _, comp in _attack_comps(profile, gold):
+        dmg, _, _ = best_defense(profile, deck, budget, comp)
+        best = max(best, dmg)
+    return best
+
+
+def report_hoard(profile):
+    """Проверка «копить и ударить одной волной» — то, чего не видит матрица.
+
+    Матрица раздела 4 тратит доход каждой волны. Здесь штурмовик может
+    не тратить ничего и вложить накопленное в один заход. Каждый такой
+    дебют стоит N-1 проигранных раундов, поэтому планов немного: обычная
+    игра, дебют во 2-й волне и два дебюта (R2, затем R4). Если ни один
+    не даёт 6 побед, «одной кнопкой» матч не выигрывается.
+    """
+    eco = profile["economy"]
+    if "budget_defender" not in eco:
+        return
+    hp = int(eco["base_hp"])
+    print()
+    print("=" * 78)
+    print("6. «ОДНА КНОПКА»: копить и ударить одной волной")
+    print("=" * 78)
+    print("  Каждый дебют стоит N-1 проигранных раундов, поэтому допустимы")
+    print("  только планы с бюджетом проигрышей <= 4. Оборона отвечает лучшей")
+    print("  башней деки — как в разделе 4. Победы считаются по 10 волнам.")
+
+    plans = [
+        ("обычная игра", []),
+        ("дебют R2", [(1, 2)]),
+        ("дебют R2, потом R4", [(1, 2), (3, 4)]),
+    ]
+    rows = []
+    for deck_name, deck in TOWER_DECKS.items():
+        defs, total = [], 0
+        for i in range(len(eco["budget_attacker"])):
+            total += eco["budget_defender"][i]
+            defs.append(total)
+        wins_by_plan = []
+        for _, dumps in plans:
+            wins, detail = 0, []
+            for wave in range(1, len(eco["budget_attacker"]) + 1):
+                start = [a for a, w in dumps if w == wave]
+                if start:
+                    dmg = _hoard_damage(profile, deck, defs[wave - 1], start[0], wave)
+                elif any(a <= wave < w for a, w in dumps):
+                    dmg = 0   # копим: волна отдана
+                else:
+                    dmg = _normal_best(profile, deck, deck_name, wave)
+                if dmg >= hp:
+                    wins += 1
+                    detail.append(str(wave))
+            wins_by_plan.append((wins, detail))
+        rows.append((deck_name, wins_by_plan))
+
+    print(f"\n  {'дека':24s} {'обычная':>8s} {'дебют R2':>9s} {'R2 + R4':>8s}"
+          f" {'прирост':>8s}")
+    extra, exploit = 0, []
+    for deck_name, wins_by_plan in rows:
+        base = wins_by_plan[0][0]
+        best = max(w for w, _ in wins_by_plan)
+        extra = max(extra, best - base)
+        if best >= 6 and base < 6:
+            exploit.append(deck_name)
+        print(f"  {deck_name:24s} {wins_by_plan[0][0]:8d} {wins_by_plan[1][0]:9d}"
+              f" {wins_by_plan[2][0]:8d} {best - base:8d}")
+    print("\n  Подробно, какие волны забраны:")
+    for deck_name, wins_by_plan in rows:
+        for (plan_name, _), (wins, detail) in zip(plans, wins_by_plan):
+            print(f"    {deck_name:24s} {plan_name:20s} {wins:2d}  "
+                  f"({','.join(detail) or '—'})")
+    word = "победу" if extra == 1 else ("победы" if 2 <= extra <= 4 else "побед")
+    print(f"\n  ДЛЯ ПОБЕДЫ НУЖНО 6 ИЗ 10. Накопление добавляет максимум "
+          f"{extra} {word}.")
+    if exploit:
+        print("  ВНИМАНИЕ: " + ", ".join(exploit) + " набирает 6+ копилкой —")
+        print("  это эксплойт бюджета, а не свойство деки.")
+    else:
+        print("  Ни одна дека не выигрывает копилкой 6 из 10: после дебюта")
+        print("  платить можно только доходом волны, и этого не хватает.")
+        holes = [f"{name} ({wins[0][0]})" for name, wins in rows if wins[0][0] >= 6]
+        if holes:
+            print("  Деки, которые отдают 6+ волн уже обычной игрой (это дыра")
+            print("  деки, а не копилки): " + ", ".join(holes) + ".")
+    print("  Матрица раздела 4 остаётся базовой моделью, этот раздел — её")
+    print("  проверка на эксплойт «одной кнопкой».")
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description="Балансный аудит Tower Duel")
     parser.add_argument("mode", nargs="?", default="all",
                         choices=["all", "coverage", "economy", "upgrades", "sim",
-                                 "decks", "levels"])
-    parser.add_argument("--profile", default="v3", choices=sorted(PROFILES))
+                                 "decks", "levels", "hoard"])
+    parser.add_argument("--profile", default=DEFAULT_PROFILE,
+                        choices=sorted(PROFILES))
     args = parser.parse_args(argv[1:])
     profile = PROFILES[args.profile]
 
@@ -1035,6 +1273,8 @@ def main(argv):
         report_decks(profile)
     if args.mode in ("all", "levels"):
         report_levels(profile)
+    if args.mode in ("all", "hoard"):
+        report_hoard(profile)
     return 0
 
 

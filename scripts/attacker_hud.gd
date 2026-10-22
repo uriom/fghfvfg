@@ -3,13 +3,16 @@ extends Control
 ## Центр экрана остаётся свободен для дороги, башен и тактического поля.
 ##
 ## ЭТАП 7: вместо кнопки «ВОЛНА ×5» — большая кнопка «ДЕРЖАТЬ»: одно нажатие
-## покупает юнита, удержание покупает их подряд (10 раз в секунду), пока
-## хватает кредитов. Рядом — кнопка уровня типа юнита (1..10).
+## покупает юнита, удержание покупает их подряд, пока хватает кредитов.
+## Рядом — кнопка уровня типа юнита (1..10).
+##
+## ЭТАП 8: зазор между покупками — ровно 0,2 с и для удержания, и для
+## «залипания» мышью. Один общий шлюз (_spawn_gate) не даёт обойти лимит ни
+## повтором клика, ни быстрым тапом: чаще 5 юнитов в секунду не купить.
 
 const PHASE_DISPLAY_SCRIPT := preload("res://scripts/phase_display.gd")
-## Удержание кнопки: первый юнит сразу, дальше — с этим интервалом.
-const HOLD_INTERVAL := 0.10
-const HOLD_FIRST_DELAY := 0.22
+## Минимальный зазор между двумя покупками юнита, сек.
+const SPAWN_GAP := 0.20
 const BAR_HEIGHT := 64.0
 const DOCK_HEIGHT := 150.0
 const DOCK_MAX_WIDTH := 820.0
@@ -33,7 +36,9 @@ var _unit_cards: HBoxContainer
 var _last_gold := -1
 ## Тип юнита, кнопку которого сейчас держат ("" — не держат).
 var _hold_unit := ""
-var _hold_clock := 0.0
+## Момент (мс, Time.get_ticks_msec), раньше которого следующая покупка
+## невозможна. Общий и для удержания, и для кликов.
+var _spawn_gate := 0
 
 
 func _ready() -> void:
@@ -379,13 +384,11 @@ func _meter_style(fill: Color) -> StyleBoxFlat:
 ## Автоповтор живёт в _process, чтобы темп не зависел от частоты нажатий мыши.
 func _on_hold_started(unit_id: String) -> void:
 	_hold_unit = unit_id
-	_hold_clock = HOLD_FIRST_DELAY
 	_buy_one(unit_id, true)
 
 
 func _on_hold_stopped() -> void:
 	_hold_unit = ""
-	_hold_clock = 0.0
 
 
 ## Короткий клик тоже приходит как pressed (после button_up) — не покупаем
@@ -399,20 +402,18 @@ func _on_hold_click(_unit_id: String) -> void:
 func _buy_one(unit_id: String, audible: bool) -> void:
 	if _unit_spawner == null:
 		return
+	# Зазор 0,2 с: и для удержания, и для спама кликами. Проверяем ДО денег,
+	# чтобы «зажатие» не превращалось в пулемёт из серверных RPC.
+	if Time.get_ticks_msec() < _spawn_gate:
+		return
 	if not _can_afford(unit_id, 1):
 		if audible:
 			_deny()
-		_stop_hold_if_empty()
 		return
 	if audible:
 		AudioManager.play_sfx("click", -7.0, 1.2)
+	_spawn_gate = Time.get_ticks_msec() + int(round(SPAWN_GAP * 1000.0))
 	_unit_spawner.enqueue_unit(unit_id, 1)
-
-
-## Если кредиты кончились — поток останавливаем, но кнопку не отпускаем:
-## игрок увидит, что покупать больше нечего.
-func _stop_hold_if_empty() -> void:
-	_hold_clock = HOLD_INTERVAL
 
 
 func _deny() -> void:
@@ -475,18 +476,17 @@ func _process(delta: float) -> void:
 	_refresh_card_states()
 
 
-## Автоповтор «зажатой» кнопки. Покупаем только когда есть деньги и место в
-## очереди; сервер всё равно проверяет каждую покупку.
-func _tick_hold(delta: float) -> void:
+## Автоповтор «зажатой» кнопки. Покупаем, как только истёк общий зазор
+## 0,2 с; _buy_one сам проверит деньги и место в очереди. Сервер всё равно
+## проверяет каждую покупку и держит свой лимит частоты.
+func _tick_hold(_delta: float) -> void:
 	if _hold_unit == "":
 		return
 	if not GameState.can_buy_units():
 		_hold_unit = ""
 		return
-	_hold_clock -= delta
-	if _hold_clock > 0.0:
+	if Time.get_ticks_msec() < _spawn_gate:
 		return
-	_hold_clock = HOLD_INTERVAL
 	_buy_one(_hold_unit, false)
 
 
